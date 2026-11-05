@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='.9em' font-size='56'%3E%F0%9F%90%B1%3C/text%3E%3C/svg%3E">
 <title>会说话的汤姆猫 - Talking Tom 3D</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -28,8 +29,8 @@
     position: absolute; top: 18px; left: 0; right: 0; text-align: center; z-index: 10;
     color: #fff; pointer-events: none;
   }
-  #title h1 { font-size: 22px; font-weight: 600; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
-  #title p { font-size: 12px; color: #9fb2c4; margin-top: 4px; }
+  #title h1 { font-size: 22px; font-weight: 600; text-shadow: 0 2px 10px rgba(0,0,0,.95), 0 0 26px rgba(0,0,0,.75); }
+  #title p { font-size: 12px; color: #c8d7e5; margin-top: 4px; text-shadow: 0 1px 6px rgba(0,0,0,.95); }
 
   /* 动画按钮面板 */
   #panel {
@@ -50,7 +51,7 @@
   /* 提示 */
   #hint {
     position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
-    z-index: 10; font-size: 12px; color: #8fa0b3; pointer-events: none;
+    z-index: 10; font-size: 12px; color: #b9c9d8; text-shadow: 0 1px 6px rgba(0,0,0,.95); pointer-events: none;
     opacity: 1; transition: opacity 1s;
   }
   #hint.fade { opacity: 0; }
@@ -91,6 +92,17 @@
   }
 
   canvas { display: block; }
+
+  /* 右上角音效开关 */
+  #sound-toggle {
+    position: absolute; top: 16px; right: 18px; z-index: 20;
+    width: 38px; height: 38px; border-radius: 50%; cursor: pointer;
+    font-size: 17px; line-height: 1; color: #e8eef4;
+    background: rgba(16,20,24,.62); border: 1px solid rgba(255,255,255,.12);
+    backdrop-filter: blur(10px); transition: all .15s;
+  }
+  #sound-toggle:hover { background: rgba(255,255,255,.18); transform: scale(1.08); }
+  #sound-toggle.muted { opacity: .55; }
 </style>
 </head>
 <body>
@@ -100,6 +112,7 @@
     <p>Three.js · GLB 模型 · 骨骼动画</p>
   </div>
   <div id="hint">🖱️ 拖拽旋转 · 点击猫咪打它一下 · 底部按钮互动</div>
+  <button id="sound-toggle" title="音效开关" aria-label="音效开关">🔊</button>
   <div id="bubble"></div>
   <div id="panel"></div>
   <div id="loader">
@@ -146,13 +159,38 @@ function applyManualTextures(model) {
         if (obj.isMesh && obj.material) {
           const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
           mats.forEach((m) => {
-            if (m.name === name && !m.map) {
+            if (m.name === name) {
               m.map = tex;
               m.needsUpdate = true;
             }
           });
         }
       });
+    });
+  });
+}
+
+/* 眼球结构修正：
+   GLB 里 New_Material_2（corneas 角膜外层）没有 alphaMode/baseColorFactor，
+   New_Material_1（上眼影）用的是一张近乎纯黑的贴图，两者在 Three.js 里都会被渲染成
+   不透明的纯白/纯黑球壳，正好罩住 Blue_Eye 的绿色虹膜，所以眼睛看起来只有黑白。
+   把这两层改成透明并关闭深度写入，让里面的绿色眼睛透出来（透明度保留一点高光/眼睑阴影）。 */
+function fixEyeMaterials(model) {
+  model.traverse((obj) => {
+    if (!obj.isMesh || !obj.material) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach((m) => {
+      if (m.name === 'New_Material_2') {
+        m.transparent = true;
+        m.opacity = 0.10;
+        m.depthWrite = false;
+        m.needsUpdate = true;
+      } else if (m.name === 'New_Material_1') {
+        m.transparent = true;
+        m.opacity = 0.22;
+        m.depthWrite = false;
+        m.needsUpdate = true;
+      }
     });
   });
 }
@@ -218,6 +256,114 @@ ring.rotation.x = -Math.PI / 2;
 ring.position.y = 0.001;
 scene.add(ring);
 
+/* ---------- 背景墙 ---------- */
+/* 砖纹和挂画都用 canvas 程序化生成，不依赖外部图片，页面仍可单文件打开 */
+function makeBrickTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 1024; cv.height = 512;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#241f1c';                       // 砖缝底色
+  g.fillRect(0, 0, cv.width, cv.height);
+  const bw = 128, bh = 64, gap = 5;
+  for (let row = 0; row < 8; row++) {
+    const shift = row % 2 ? -bw / 2 : 0;          // 错缝砌法
+    for (let col = -1; col <= 8; col++) {
+      const x = col * bw + shift, y = row * bh;
+      const v = Math.random() * 16;
+      const r = 66 + v, gg = 54 + v * 0.8, b = 47 + v * 0.65;
+      const grad = g.createLinearGradient(x, y, x, y + bh - gap);
+      grad.addColorStop(0, `rgb(${r + 12},${gg + 10},${b + 8})`);
+      grad.addColorStop(1, `rgb(${r - 14},${gg - 14},${b - 13})`);
+      g.fillStyle = grad;
+      g.fillRect(x + gap / 2, y + gap / 2, bw - gap, bh - gap);
+      for (let k = 0; k < 24; k++) {             // 砖面颗粒
+        g.fillStyle = `rgba(0,0,0,${0.03 + Math.random() * 0.07})`;
+        g.fillRect(x + 2 + Math.random() * (bw - 8), y + 2 + Math.random() * (bh - 8),
+          2 + Math.random() * 5, 1 + Math.random() * 3);
+      }
+    }
+  }
+  const shade = g.createLinearGradient(0, 0, 0, cv.height);
+  shade.addColorStop(0, 'rgba(0,0,0,0.12)');
+  shade.addColorStop(0.45, 'rgba(0,0,0,0)');
+  shade.addColorStop(1, 'rgba(0,0,0,0.5)');
+  g.fillStyle = shade; g.fillRect(0, 0, cv.width, cv.height);
+  g.fillStyle = 'rgba(12,14,18,0.26)';        // 整体压暗，避免背景抢主体
+  g.fillRect(0, 0, cv.width, cv.height);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 2);                        // 还原砖块 2:1 的长宽比
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+function makeWindowTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 512; cv.height = 384;
+  const g = cv.getContext('2d');
+  const sky = g.createLinearGradient(0, 0, 0, cv.height);
+  sky.addColorStop(0, '#0a1530');
+  sky.addColorStop(0.6, '#1b2f55');
+  sky.addColorStop(1, '#46577a');
+  g.fillStyle = sky; g.fillRect(0, 0, cv.width, cv.height);
+  for (let i = 0; i < 80; i++) {                 // 星星
+    g.fillStyle = `rgba(255,255,255,${0.25 + Math.random() * 0.7})`;
+    const s = Math.random() * 1.6 + 0.4;
+    g.fillRect(Math.random() * cv.width, Math.random() * 250, s, s);
+  }
+  g.fillStyle = '#f7f1d5';                       // 月亮
+  g.beginPath(); g.arc(382, 86, 32, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#0b1220';                       // 城市剪影
+  for (let x = 0; x < cv.width; x += 26) {
+    const h = 45 + Math.random() * 95;
+    g.fillRect(x, cv.height - h, 22, h);
+    for (let wy = cv.height - h + 8; wy < cv.height - 8; wy += 14) {
+      if (Math.random() < 0.45) {
+        g.fillStyle = 'rgba(255,205,120,0.75)';
+        g.fillRect(x + 5, wy, 4, 5);
+        g.fillStyle = '#0b1220';
+      }
+    }
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const wall = new THREE.Mesh(
+  new THREE.PlaneGeometry(16, 8),
+  new THREE.MeshStandardMaterial({ map: makeBrickTexture(), roughness: 0.98, metalness: 0 })
+);
+wall.position.set(0, 4, -3.4);
+wall.receiveShadow = true;                     // 让猫咪的影子投到墙上
+scene.add(wall);
+
+const baseboard = new THREE.Mesh(              // 踢脚线
+  new THREE.BoxGeometry(16, 0.3, 0.14),
+  new THREE.MeshStandardMaterial({ color: 0x191512, roughness: 0.9 })
+);
+baseboard.position.set(0, 0.15, -3.31);
+baseboard.receiveShadow = true;
+scene.add(baseboard);
+
+const frame = new THREE.Mesh(                  // 墙上的夜景挂画
+  new THREE.BoxGeometry(2.7, 2.05, 0.12),
+  new THREE.MeshStandardMaterial({ color: 0x3a2b20, roughness: 0.85 })
+);
+frame.position.set(-2.4, 2.7, -3.28);
+scene.add(frame);
+const picture = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.44, 1.79),
+  new THREE.MeshBasicMaterial({ map: makeWindowTexture() })
+);
+picture.position.set(-2.4, 2.7, -3.215);
+scene.add(picture);
+
+const wallGlow = new THREE.PointLight(0xffb066, 22, 11, 2);  // 暖色氛围光，只影响墙和地面
+wallGlow.position.set(-1.2, 3.0, -1.6);
+scene.add(wallGlow);
+
 /* ---------- 加载模型 ---------- */
 const loader = new GLTFLoader();
 const barFill = document.getElementById('bar-fill');
@@ -265,6 +411,8 @@ loader.load(
 
     // 手动贴图兜底（GLTFLoader 内嵌贴图解码失败时保证有颜色）
     applyManualTextures(model);
+    // 透出绿色虹膜（角膜/眼影在 glTF 里缺少透明信息，默认会挡住眼睛）
+    fixEyeMaterials(model);
 
     // 动画
     animations = gltf.animations || [];
@@ -342,160 +490,237 @@ function addExtraBtn(panel, label, fn) {
 
 /* ---------- 音效（Web Audio 实时合成，无需音频文件） ---------- */
 let actx = null;
+let sfxBus = null;        // 干声总线
+let wetBus = null;        // 混响发送
+let masterGain = null;
+let noiseBuf = null;
+let soundOn = true;
+
+/** 生成衰减噪声作为简易混响脉冲响应，省去外部音频文件 */
+function makeImpulse(ctx, seconds = 1.1, decay = 2.6) {
+  const len = Math.floor(ctx.sampleRate * seconds);
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+  }
+  return buf;
+}
+
+/** 复用噪声 buffer，避免每次交互都重新分配 */
+function getNoiseBuffer(ctx, seconds = 0.5) {
+  if (noiseBuf && noiseBuf.duration >= seconds) return noiseBuf;
+  const len = Math.ceil(ctx.sampleRate * seconds);
+  noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  return noiseBuf;
+}
+
 function audioCtx() {
-  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // 主链：各音效 -> 压缩器（防多音叠加爆音）-> 主音量 -> 输出
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -16;
+    comp.knee.value = 22;
+    comp.ratio.value = 6;
+    comp.attack.value = 0.003;
+    comp.release.value = 0.22;
+    masterGain = actx.createGain();
+    masterGain.gain.value = soundOn ? 0.75 : 0;
+    comp.connect(masterGain).connect(actx.destination);
+
+    // 少量并联混响，给合成音一点空间感
+    const conv = actx.createConvolver();
+    conv.buffer = makeImpulse(actx);
+    wetBus = actx.createGain();
+    wetBus.gain.value = 0.16;
+    wetBus.connect(conv).connect(comp);
+
+    sfxBus = actx.createGain();
+    sfxBus.connect(comp);
+    sfxBus.connect(wetBus);
+  }
   if (actx.state === 'suspended') actx.resume();
   return actx;
 }
 
-// 说话：一串随机音高的短促"喵语"
+/** 指数包络，起音/收尾都留出余量，避免咔哒声和爆音 */
+function ampEnv(gain, t, peak, attack, dur) {
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), t + Math.min(attack, dur / 3));
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+}
+
+/** 带滤波的噪声层，给合成音补上气声/摩擦质感 */
+function noiseLayer(ctx, t, dur, { type = 'bandpass', freq = 900, q = 0.8, peak = 0.12 } = {}) {
+  const src = ctx.createBufferSource();
+  src.buffer = getNoiseBuffer(ctx, Math.max(dur, 0.5));
+  const f = ctx.createBiquadFilter();
+  f.type = type; f.frequency.value = freq; f.Q.value = q;
+  const g = ctx.createGain();
+  ampEnv(g, t, peak, 0.012, dur);
+  src.connect(f).connect(g).connect(sfxBus);
+  src.start(t); src.stop(t + dur + 0.02);
+}
+
+const soundToggle = document.getElementById('sound-toggle');
+soundToggle.addEventListener('click', () => {
+  soundOn = !soundOn;
+  soundToggle.textContent = soundOn ? '🔊' : '🔇';
+  soundToggle.classList.toggle('muted', !soundOn);
+  if (masterGain && actx) masterGain.gain.setTargetAtTime(soundOn ? 0.75 : 0, actx.currentTime, 0.02);
+});
+
+// 说话：用两个共振峰模拟元音，叠低频厚度与气声，比单纯锯齿波更像"喵语"
 function sfxTalk(dur = 1.4) {
   const ctx = audioCtx();
-  const t0 = ctx.currentTime;
-  const master = ctx.createGain();
-  master.gain.value = 0.45;
-  master.connect(ctx.destination);
+  const t0 = ctx.currentTime + 0.01;
+  const vowels = [[520, 1180], [400, 900], [700, 1500], [330, 1050]];
   let t = t0;
   while (t < t0 + dur) {
-    const len = 0.06 + Math.random() * 0.1;
+    const len = 0.09 + Math.random() * 0.13;
+    const v = vowels[Math.floor(Math.random() * vowels.length)];
+    const base = 170 + Math.random() * 130;
+
     const osc = ctx.createOscillator();
     osc.type = 'sawtooth';
-    const base = 150 + Math.random() * 180;
-    osc.frequency.setValueAtTime(base, t);
-    osc.frequency.linearRampToValueAtTime(base * (0.7 + Math.random() * 0.8), t + len);
-    const filt = ctx.createBiquadFilter();
-    filt.type = 'bandpass';
-    filt.frequency.value = 500 + Math.random() * 900;
-    filt.Q.value = 2;
+    osc.frequency.setValueAtTime(base * (0.92 + Math.random() * 0.2), t);
+    osc.frequency.linearRampToValueAtTime(base * (0.72 + Math.random() * 0.55), t + len);
+    const sub = ctx.createOscillator();
+    sub.type = 'triangle';
+    sub.frequency.setValueAtTime(base / 2, t);
+    sub.frequency.linearRampToValueAtTime(base / 2.4, t + len);
+
+    const f1 = ctx.createBiquadFilter(); f1.type = 'bandpass'; f1.frequency.value = v[0]; f1.Q.value = 5;
+    const f2 = ctx.createBiquadFilter(); f2.type = 'bandpass'; f2.frequency.value = v[1]; f2.Q.value = 7;
+    const g1 = ctx.createGain(); g1.gain.value = 0.9;
+    const g2 = ctx.createGain(); g2.gain.value = 0.45;
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(1, t + 0.02);
-    g.gain.linearRampToValueAtTime(0, t + len);
-    osc.connect(filt).connect(g).connect(master);
+    ampEnv(g, t, 0.32, 0.02, len);
+
+    osc.connect(f1).connect(g1).connect(g);
+    osc.connect(f2).connect(g2).connect(g);
+    sub.connect(g);
+    g.connect(sfxBus);
     osc.start(t); osc.stop(t + len + 0.02);
-    t += len + Math.random() * 0.06;
+    sub.start(t); sub.stop(t + len + 0.02);
+    if (Math.random() < 0.5) noiseLayer(ctx, t, len * 0.7, { freq: 1600, q: 0.7, peak: 0.03 });
+    t += len + 0.02 + Math.random() * 0.05;
   }
 }
 
-// 喝牛奶：咕咚咕咚吞咽声
+// 喝牛奶：吞咽下滑音 + 液体气泡噪声 + 满足的叹气
 function sfxMilk() {
   const ctx = audioCtx();
-  const t0 = ctx.currentTime;
+  const t0 = ctx.currentTime + 0.01;
   for (let i = 0; i < 4; i++) {
-    const t = t0 + i * 0.3;
+    const t = t0 + i * 0.28;
     const osc = ctx.createOscillator();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(300 - i * 25, t);
-    osc.frequency.exponentialRampToValueAtTime(70, t + 0.13);
+    osc.frequency.setValueAtTime(310 - i * 22, t);
+    osc.frequency.exponentialRampToValueAtTime(85, t + 0.14);
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.6, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-    osc.connect(g).connect(ctx.destination);
+    ampEnv(g, t, 0.42, 0.015, 0.17);
+    osc.connect(g).connect(sfxBus);
     osc.start(t); osc.stop(t + 0.2);
+    noiseLayer(ctx, t + 0.01, 0.09, { freq: 420 + i * 60, q: 3, peak: 0.05 });
   }
-  // 满足的"哈～"叹气
+  const t1 = t0 + 1.25;
   const o2 = ctx.createOscillator();
-  o2.type = 'sawtooth';
-  o2.frequency.setValueAtTime(330, t0 + 1.3);
-  o2.frequency.exponentialRampToValueAtTime(180, t0 + 1.8);
+  o2.type = 'triangle';
+  o2.frequency.setValueAtTime(340, t1);
+  o2.frequency.exponentialRampToValueAtTime(190, t1 + 0.5);
   const f2 = ctx.createBiquadFilter();
-  f2.type = 'bandpass'; f2.frequency.value = 700; f2.Q.value = 1.5;
+  f2.type = 'lowpass'; f2.frequency.value = 1100;
   const g2 = ctx.createGain();
-  g2.gain.setValueAtTime(0.0001, t0 + 1.3);
-  g2.gain.linearRampToValueAtTime(0.18, t0 + 1.4);
-  g2.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.9);
-  o2.connect(f2).connect(g2).connect(ctx.destination);
-  o2.start(t0 + 1.3); o2.stop(t0 + 2.0);
+  ampEnv(g2, t1, 0.16, 0.08, 0.62);
+  o2.connect(f2).connect(g2).connect(sfxBus);
+  o2.start(t1); o2.stop(t1 + 0.66);
+  noiseLayer(ctx, t1, 0.55, { freq: 900, q: 0.6, peak: 0.03 });
 }
 
-// 放屁：低频锯齿波 + 颤音
+// 放屁：低频颤音 + 滤波扫频 + 气流噪声，收尾更软
 function sfxFart() {
   const ctx = audioCtx();
-  const t0 = ctx.currentTime;
-  const dur = 0.5 + Math.random() * 0.5;
+  const t0 = ctx.currentTime + 0.01;
+  const dur = 0.45 + Math.random() * 0.45;
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
   let t = t0;
   while (t < t0 + dur) {
-    osc.frequency.setValueAtTime(45 + Math.random() * 60, t);
-    t += 0.03 + Math.random() * 0.04;
+    osc.frequency.setValueAtTime(48 + Math.random() * 55, t);
+    t += 0.035 + Math.random() * 0.04;
   }
   const lfo = ctx.createOscillator();
-  lfo.frequency.value = 16 + Math.random() * 16;
-  const lfoG = ctx.createGain();
-  lfoG.gain.value = 28;
+  lfo.frequency.value = 15 + Math.random() * 14;
+  const lfoG = ctx.createGain(); lfoG.gain.value = 26;
   lfo.connect(lfoG).connect(osc.frequency);
   const filt = ctx.createBiquadFilter();
-  filt.type = 'lowpass'; filt.frequency.value = 260; filt.Q.value = 5;
+  filt.type = 'lowpass'; filt.Q.value = 4;
+  filt.frequency.setValueAtTime(420, t0);
+  filt.frequency.exponentialRampToValueAtTime(160, t0 + dur);
   const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(0.55, t0 + 0.04);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  osc.connect(filt).connect(g).connect(ctx.destination);
-  osc.start(t0); osc.stop(t0 + dur);
-  lfo.start(t0); lfo.stop(t0 + dur);
+  ampEnv(g, t0, 0.42, 0.035, dur);
+  osc.connect(filt).connect(g).connect(sfxBus);
+  osc.start(t0); osc.stop(t0 + dur + 0.02);
+  lfo.start(t0); lfo.stop(t0 + dur + 0.02);
+  noiseLayer(ctx, t0, dur, { type: 'lowpass', freq: 260, q: 0.8, peak: 0.1 });
 }
 
-// 恶搞"boing"弹簧音
+// 恶搞"boing"：主音 + 金属泛音 + 频率颤动
 function sfxBoing() {
   const ctx = audioCtx();
-  const t0 = ctx.currentTime;
-  const osc = ctx.createOscillator();
-  osc.type = 'triangle';
-  osc.frequency.setValueAtTime(600, t0);
-  osc.frequency.exponentialRampToValueAtTime(110, t0 + 0.55);
-  const lfo = ctx.createOscillator();
-  lfo.frequency.value = 24;
-  const lg = ctx.createGain();
-  lg.gain.value = 70;
-  lfo.connect(lg).connect(osc.frequency);
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.4, t0);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.65);
-  osc.connect(g).connect(ctx.destination);
-  osc.start(t0); osc.stop(t0 + 0.7);
-  lfo.start(t0); lfo.stop(t0 + 0.7);
+  const t0 = ctx.currentTime + 0.01;
+  const mk = (type, f0, f1, peak, dur, detune = 0) => {
+    const o = ctx.createOscillator();
+    o.type = type;
+    o.detune.value = detune;
+    o.frequency.setValueAtTime(f0, t0);
+    o.frequency.exponentialRampToValueAtTime(f1, t0 + dur * 0.8);
+    const g = ctx.createGain();
+    ampEnv(g, t0, peak, 0.008, dur);
+    o.connect(g).connect(sfxBus);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+    return o;
+  };
+  const main = mk('triangle', 620, 105, 0.3, 0.62);
+  mk('sine', 1240, 210, 0.09, 0.42, 6);
+  const lfo = ctx.createOscillator(); lfo.frequency.value = 22;
+  const lg = ctx.createGain(); lg.gain.value = 55;
+  lfo.connect(lg).connect(main.frequency);
+  lfo.start(t0); lfo.stop(t0 + 0.65);
 }
 
-// 被打：重击 + 噪声 + "哎哟"滑音
+// 被打：低频重击 + 拍击噪声 + 先上滑后下滑的"哎哟"
 function sfxHit() {
   const ctx = audioCtx();
-  const t0 = ctx.currentTime;
-  // 低频重击
+  const t0 = ctx.currentTime + 0.01;
   const osc = ctx.createOscillator();
   osc.type = 'sine';
-  osc.frequency.setValueAtTime(180, t0);
-  osc.frequency.exponentialRampToValueAtTime(40, t0 + 0.12);
+  osc.frequency.setValueAtTime(190, t0);
+  osc.frequency.exponentialRampToValueAtTime(45, t0 + 0.13);
   const g = ctx.createGain();
-  g.gain.setValueAtTime(0.9, t0);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
-  osc.connect(g).connect(ctx.destination);
+  ampEnv(g, t0, 0.6, 0.004, 0.19);
+  osc.connect(g).connect(sfxBus);
   osc.start(t0); osc.stop(t0 + 0.2);
-  // 拍击噪声
-  const nb = ctx.createBuffer(1, ctx.sampleRate * 0.1 | 0, ctx.sampleRate);
-  const d = nb.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2);
-  const src = ctx.createBufferSource();
-  src.buffer = nb;
-  const f = ctx.createBiquadFilter();
-  f.type = 'lowpass'; f.frequency.value = 800;
-  const g2 = ctx.createGain(); g2.gain.value = 0.7;
-  src.connect(f).connect(g2).connect(ctx.destination);
-  src.start(t0);
-  // 哎哟～
+
+  noiseLayer(ctx, t0, 0.11, { type: 'lowpass', freq: 1100, q: 0.7, peak: 0.26 });
+
+  const t2 = t0 + 0.1;
   const o2 = ctx.createOscillator();
   o2.type = 'sawtooth';
-  o2.frequency.setValueAtTime(520, t0 + 0.12);
-  o2.frequency.exponentialRampToValueAtTime(200, t0 + 0.38);
+  o2.frequency.setValueAtTime(420, t2);
+  o2.frequency.exponentialRampToValueAtTime(660, t2 + 0.08);
+  o2.frequency.exponentialRampToValueAtTime(210, t2 + 0.34);
   const f2 = ctx.createBiquadFilter();
-  f2.type = 'bandpass'; f2.frequency.value = 700; f2.Q.value = 1.5;
+  f2.type = 'bandpass'; f2.frequency.value = 780; f2.Q.value = 2.2;
   const g3 = ctx.createGain();
-  g3.gain.setValueAtTime(0.0001, t0 + 0.12);
-  g3.gain.linearRampToValueAtTime(0.3, t0 + 0.16);
-  g3.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.45);
-  o2.connect(f2).connect(g3).connect(ctx.destination);
-  o2.start(t0 + 0.12); o2.stop(t0 + 0.5);
+  ampEnv(g3, t2, 0.22, 0.02, 0.4);
+  o2.connect(f2).connect(g3).connect(sfxBus);
+  o2.start(t2); o2.stop(t2 + 0.42);
 }
 
 /* ---------- 视觉互动效果 ---------- */
