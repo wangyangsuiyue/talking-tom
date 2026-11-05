@@ -175,7 +175,7 @@
     <h1>🐱 会说话的汤姆猫</h1>
     <p>Three.js · GLB 模型 · 骨骼动画</p>
   </div>
-  <div id="hint">🖱️ 连续打击会倒下 · 点击两侧按钮 · 【💃 跳舞】· 【🎙️ 学我说话】</div>
+  <div id="hint">🖱️ 连续打击会倒下 · 点击两侧按钮 · 【💃 科目三】· 【🎙️ 学我说话】</div>
   <button id="sound-toggle" title="音效开关" aria-label="音效开关">🔊</button>
   <div id="bubble"></div>
   <div id="panel-left" class="side-panel"></div>
@@ -447,6 +447,23 @@ let isTomSpeaking = false;
 let talkTimer = null;
 
 // 跳舞与连续打击状态
+// 科目三骨骼引用与初始姿态缓存
+const danceBones = {};
+const baseDanceRots = {};
+const BONE_KEYS = [
+  { key: 'lFoot', name: 'l_foot_00_uJnt_05' },
+  { key: 'rFoot', name: 'r_foot_00_uJnt_012' },
+  { key: 'lThigh', name: 'l_tigh_01_uJnt_02' },
+  { key: 'rThigh', name: 'r_tigh_01_uJnt_09' },
+  { key: 'lArm', name: 'l_humerusRibbon_01_uJnt_076' },
+  { key: 'rArm', name: 'r_humerusRibbon_01_uJnt_026' },
+  { key: 'lElbow', name: 'l_radiusRibbon_01_uJnt_077' },
+  { key: 'rElbow', name: 'r_radiusRibbon_01_uJnt_027' },
+  { key: 'lWrist', name: 'l_wrist_00_uJnt_078' },
+  { key: 'rWrist', name: 'r_wrist_00_uJnt_028' },
+  { key: 'head', name: 'c_head_00_uJnt_038' },
+  { key: 'neck', name: 'c_neck_00_uJnt_037' }
+];
 let isDancing = false;
 let danceStartTime = 0;
 let danceTimer = null;
@@ -500,6 +517,9 @@ loader.load(
     baseModelRot.copy(model.rotation);
     if (headBone) baseHeadRot.copy(headBone.rotation);
     if (jawBone) baseJawRot.copy(jawBone.rotation);
+    BONE_KEYS.forEach(b => {
+      if (danceBones[b.key]) baseDanceRots[b.key] = danceBones[b.key].rotation.clone();
+    });
 
     // 手动贴图兜底（GLTFLoader 内嵌贴图解码失败时保证有颜色）
     applyManualTextures(model);
@@ -594,7 +614,7 @@ function buildPanels() {
 
   // 左侧互动按钮：喝牛奶、吃辣椒、放屁
   addSideBtn(panelLeft, '🥛 喝牛奶', doMilk, 'linear-gradient(135deg,#38ef7d,#11998e)');
-  const danceBtn = addSideBtn(panelLeft, '💃 跳舞', doDance, 'linear-gradient(135deg,#f093fb,#f5576c)');
+  const danceBtn = addSideBtn(panelLeft, '💃 科目三', doDance, 'linear-gradient(135deg,#f093fb,#f5576c)');
   danceBtn.id = 'btn-dance';
   addSideBtn(panelLeft, '🌶️ 吃辣椒', doSpicy, 'linear-gradient(135deg,#ff416c,#ff4b2b)');
   addSideBtn(panelLeft, '💨 放个屁', doFart, 'linear-gradient(135deg,#8e2de2,#4a00e0)');
@@ -703,43 +723,59 @@ soundToggle.addEventListener('click', () => {
   if (masterGain && actx) masterGain.gain.setTargetAtTime(soundOn ? 0.75 : 0, actx.currentTime, 0.02);
 });
 
-// 欢快跳舞舞曲节拍合成（低音鼓 + 踩镲 + 迪斯科旋律琶音）
+// 科目三魔性洗脑电音旋律与鼓点合成 (128 BPM 节奏 + 经典五音律琶音)
 function sfxDanceBeat(step = 0) {
   const ctx = audioCtx();
   const t0 = ctx.currentTime + 0.01;
 
   // 1. 动感低音底鼓 (Four-on-the-floor kick)
-  const kick = ctx.createOscillator();
-  kick.type = 'sine';
-  kick.frequency.setValueAtTime(140, t0);
-  kick.frequency.exponentialRampToValueAtTime(36, t0 + 0.12);
-  const kickG = ctx.createGain();
-  ampEnv(kickG, t0, 0.55, 0.003, 0.14);
-  kick.connect(kickG).connect(sfxBus);
-  kick.start(t0); kick.stop(t0 + 0.16);
-
-  // 2. 踩镲 (Hi-hat)
-  if (step % 2 === 1) {
-    noiseLayer(ctx, t0, 0.05, { type: 'highpass', freq: 6500, q: 2, peak: 0.14 });
+  if (step % 2 === 0) {
+    const kick = ctx.createOscillator();
+    kick.type = 'sine';
+    kick.frequency.setValueAtTime(145, t0);
+    kick.frequency.exponentialRampToValueAtTime(38, t0 + 0.12);
+    const kickG = ctx.createGain();
+    ampEnv(kickG, t0, 0.6, 0.002, 0.14);
+    kick.connect(kickG).connect(sfxBus);
+    kick.start(t0); kick.stop(t0 + 0.15);
   }
 
-  // 3. 旋律合成器琶音 (Disco Synth Bassline)
-  const notes = [220, 261.6, 293.7, 329.6, 392.0, 440, 523.3, 587.3];
-  const freq = notes[step % notes.length];
-  const synth = ctx.createOscillator();
-  synth.type = (step % 4 === 0) ? 'sawtooth' : 'triangle';
-  synth.frequency.setValueAtTime(freq, t0);
-  const synthFilt = ctx.createBiquadFilter();
-  synthFilt.type = 'lowpass';
-  synthFilt.frequency.setValueAtTime(1600, t0);
-  synthFilt.frequency.exponentialRampToValueAtTime(500, t0 + 0.18);
-  const synthG = ctx.createGain();
-  ampEnv(synthG, t0, 0.32, 0.01, 0.2);
-  synth.connect(synthFilt).connect(synthG).connect(sfxBus);
-  synth.start(t0); synth.stop(t0 + 0.22);
+  // 2. 踩镲与拍手切分音 (Off-beat Hi-hat & Clap)
+  if (step % 2 === 1) {
+    noiseLayer(ctx, t0, 0.06, { type: 'highpass', freq: 7000, q: 2.5, peak: 0.16 });
+  }
+  if (step % 4 === 2) {
+    noiseLayer(ctx, t0, 0.12, { type: 'bandpass', freq: 1200, q: 1.2, peak: 0.22 });
+  }
+
+  // 3. 科目三经典五声音阶主旋律电音 (A4, C5, D5, E5, G5, A5)
+  const melody = [440, 523.3, 587.3, 659.3, 659.3, 587.3, 523.3, 440, 392, 440, 523.3, 440, 587.3, 659.3, 784, 880];
+  const freq = melody[step % melody.length];
+
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(freq, t0);
+
+  const sub = ctx.createOscillator();
+  sub.type = 'triangle';
+  sub.frequency.setValueAtTime(freq / 2, t0);
+
+  const filt = ctx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.setValueAtTime(2200, t0);
+  filt.frequency.exponentialRampToValueAtTime(600, t0 + 0.18);
+
+  const g = ctx.createGain();
+  ampEnv(g, t0, 0.35, 0.01, 0.2);
+
+  osc.connect(filt).connect(g);
+  sub.connect(g);
+  g.connect(sfxBus);
+
+  osc.start(t0); osc.stop(t0 + 0.22);
+  sub.start(t0); sub.stop(t0 + 0.22);
 }
 
-// 眩晕小哨音
 function sfxDizzy() {
   const ctx = audioCtx();
   const t0 = ctx.currentTime + 0.01;
@@ -1403,21 +1439,21 @@ function startDance() {
   audioCtx();
 
   const danceBtn = document.getElementById('btn-dance');
-  if (danceBtn) danceBtn.textContent = '⏸️ 停止跳舞';
+  if (danceBtn) danceBtn.textContent = '⏸️ 停止科目三';
 
-  // 动作适度加速
-  const danceAnimIdx = findAnimByPattern(/Action3|Action2|spicy|Action1/i);
-  if (danceAnimIdx !== null && mixer && animations[danceAnimIdx]) {
-    const next = mixer.clipAction(animations[danceAnimIdx]);
+  // 待机轻微呼吸动作作为底色，由程序骨骼驱动手、脚、头跳科目三
+  const breathIdx = findAnimByPattern(/breathing|idle/i);
+  if (breathIdx !== null && mixer && animations[breathIdx]) {
+    const next = mixer.clipAction(animations[breathIdx]);
     if (currentAction && currentAction !== next) {
       currentAction.fadeOut(0.25);
     }
     next.reset().fadeIn(0.25).play();
-    next.timeScale = 1.35;
+    next.timeScale = 1.0;
     currentAction = next;
   }
 
-  showBubble('一起摇摆～ 喵嗨起来！🎵💃✨', 3500);
+  showBubble('💃 科目三走起～ 丝滑小连招！🎵✨', 4500);
 
   let beatStep = 0;
   clearInterval(danceAudioInterval);
@@ -1427,11 +1463,11 @@ function startDance() {
     spawnDanceFx();
   }, 220);
 
-  // 3.8秒后自动平稳结束跳舞
+  // 5.2秒后自动丝滑收尾
   clearTimeout(danceTimer);
   danceTimer = setTimeout(() => {
     stopDance();
-  }, 3800);
+  }, 5200);
 }
 
 function stopDance() {
@@ -1441,21 +1477,24 @@ function stopDance() {
   clearInterval(danceAudioInterval);
 
   const danceBtn = document.getElementById('btn-dance');
-  if (danceBtn) danceBtn.textContent = '💃 跳舞';
+  if (danceBtn) danceBtn.textContent = '💃 科目三';
 
-  if (currentAction) currentAction.timeScale = 1.0;
   if (wallGlow) wallGlow.color.setHex(0xffb066);
 
-  // 立即绝对归位，杜绝任何抖动残留
+  // 身体与所有跳舞骨骼（脚、手、头）绝对复原归位
   if (tomModel) {
     tomModel.position.copy(baseModelPos);
     tomModel.rotation.copy(baseModelRot);
   }
-  if (headBone) headBone.rotation.copy(baseHeadRot);
-  if (jawBone) jawBone.rotation.copy(baseJawRot);
+  BONE_KEYS.forEach(b => {
+    if (danceBones[b.key] && baseDanceRots[b.key]) {
+      danceBones[b.key].rotation.copy(baseDanceRots[b.key]);
+    }
+  });
+  if (jawBone && baseJawRot) jawBone.rotation.copy(baseJawRot);
 
   sfxTomMeow(1);
-  showBubble('呼～跳得好过瘾！喵哈哈～😸', 2000);
+  showBubble('呼～这套科目三丝滑吧？喵哈哈～😸', 2200);
 
   setTimeout(() => {
     if (!isKnockedDown && !isDancing) {
@@ -1466,8 +1505,6 @@ function stopDance() {
   }, 1200);
 }
 
-// 连续打击击倒状态机
-let dizzyElements = [];
 function spawnDizzyStars() {
   clearDizzyStars();
   const stars = ['💫', '🐤', '⭐', '💫', '🐤'];
@@ -1695,16 +1732,68 @@ function animate() {
 
   const t = clock.getElapsedTime();
 
-  // 1. 跳舞：节拍上下弹跳与节奏律动 (绝对赋值，禁止累加)
+  // 1. 科目三跳舞：身体直立稳如泰山，只让【脚、手、头】丝滑律动！
   if (isDancing && tomModel) {
     const dtDance = (performance.now() - danceStartTime) * 0.001;
-    tomModel.position.y = baseModelPos.y + Math.abs(Math.sin(dtDance * 7)) * 0.12;
-    tomModel.position.x = baseModelPos.x + Math.sin(dtDance * 3.5) * 0.1;
-    tomModel.rotation.z = baseModelRot.z + Math.sin(dtDance * 3.5) * 0.12;
-    tomModel.rotation.y = baseModelRot.y + Math.sin(dtDance * 7) * 0.14;
-    if (headBone) headBone.rotation.z = baseHeadRot.z + Math.sin(dtDance * 7) * 0.15;
-    if (jawBone) jawBone.rotation.x = baseJawRot.x + Math.max(0, Math.sin(dtDance * 14)) * 0.15;
-    if (wallGlow) wallGlow.color.setHSL((dtDance * 0.6) % 1, 0.95, 0.6);
+    const beat = dtDance * 13.6;       // 130 BPM 节奏主频
+    const halfBeat = dtDance * 6.8;    // 左右交替滑步频
+
+    // 身体躯干稳立重心，绝不倾斜摇摆！
+    tomModel.position.copy(baseModelPos);
+    tomModel.rotation.copy(baseModelRot);
+
+    // 【头】：科目三卡点节拍点头与歪头 (Head nod & tilt)
+    if (danceBones.head && baseDanceRots.head) {
+      danceBones.head.rotation.z = baseDanceRots.head.z + Math.sin(halfBeat) * 0.22;
+      danceBones.head.rotation.x = baseDanceRots.head.x + Math.max(0, Math.sin(beat)) * 0.16;
+    }
+
+    // 【手】：科目三经典胸前翻手花与手臂交替内收摆动 (Wrist rolling flowers & arm wave)
+    if (danceBones.lArm && baseDanceRots.lArm) {
+      danceBones.lArm.rotation.x = baseDanceRots.lArm.x + 0.65;
+      danceBones.lArm.rotation.z = baseDanceRots.lArm.z + Math.sin(halfBeat) * 0.35;
+    }
+    if (danceBones.rArm && baseDanceRots.rArm) {
+      danceBones.rArm.rotation.x = baseDanceRots.rArm.x + 0.65;
+      danceBones.rArm.rotation.z = baseDanceRots.rArm.z + Math.sin(halfBeat) * 0.35;
+    }
+    if (danceBones.lElbow && baseDanceRots.lElbow) {
+      danceBones.lElbow.rotation.z = baseDanceRots.lElbow.z - 0.45;
+    }
+    if (danceBones.rElbow && baseDanceRots.rElbow) {
+      danceBones.rElbow.rotation.z = baseDanceRots.rElbow.z + 0.45;
+    }
+    // 关键精髓：手腕360°旋转翻手花！
+    if (danceBones.lWrist && baseDanceRots.lWrist) {
+      danceBones.lWrist.rotation.x = baseDanceRots.lWrist.x + Math.sin(beat) * 0.55;
+      danceBones.lWrist.rotation.y = baseDanceRots.lWrist.y + Math.cos(beat) * 0.55;
+    }
+    if (danceBones.rWrist && baseDanceRots.rWrist) {
+      danceBones.rWrist.rotation.x = baseDanceRots.rWrist.x + Math.sin(beat + Math.PI) * 0.55;
+      danceBones.rWrist.rotation.y = baseDanceRots.rWrist.y + Math.cos(beat + Math.PI) * 0.55;
+    }
+
+    // 【脚】：科目三经典丝滑滑步与双脚踝交替内撇外撇 (Foot twist & ankle outward/inward)
+    if (danceBones.lFoot && baseDanceRots.lFoot) {
+      danceBones.lFoot.rotation.z = baseDanceRots.lFoot.z + Math.sin(halfBeat) * 0.42;
+      danceBones.lFoot.rotation.y = baseDanceRots.lFoot.y + Math.cos(halfBeat) * 0.28;
+    }
+    if (danceBones.rFoot && baseDanceRots.rFoot) {
+      danceBones.rFoot.rotation.z = baseDanceRots.rFoot.z + Math.sin(halfBeat + Math.PI) * 0.42;
+      danceBones.rFoot.rotation.y = baseDanceRots.rFoot.y + Math.cos(halfBeat + Math.PI) * 0.28;
+    }
+    if (danceBones.lThigh && baseDanceRots.lThigh) {
+      danceBones.lThigh.rotation.x = baseDanceRots.lThigh.x + Math.max(0, Math.sin(beat)) * 0.12;
+    }
+    if (danceBones.rThigh && baseDanceRots.rThigh) {
+      danceBones.rThigh.rotation.x = baseDanceRots.rThigh.x + Math.max(0, Math.sin(beat + Math.PI)) * 0.12;
+    }
+
+    // 嘴巴跟随节拍合唱
+    if (jawBone && baseJawRot) {
+      jawBone.rotation.x = baseJawRot.x + Math.max(0, Math.sin(beat)) * 0.14;
+    }
+    if (wallGlow) wallGlow.color.setHSL((dtDance * 0.55) % 1, 0.95, 0.6);
   }
   // 2. 连续打击倒下动画：眩晕晃动 -> 摔倒倒地 -> 躺平抽搐 -> 爬起恢复
   else if (isKnockedDown && tomModel) {
