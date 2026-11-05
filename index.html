@@ -32,27 +32,38 @@
   #title h1 { font-size: 22px; font-weight: 600; text-shadow: 0 2px 10px rgba(0,0,0,.95), 0 0 26px rgba(0,0,0,.75); }
   #title p { font-size: 12px; color: #c8d7e5; margin-top: 4px; text-shadow: 0 1px 6px rgba(0,0,0,.95); }
 
-  /* 动画按钮面板 */
-  #panel {
-    position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
-    z-index: 10; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
-    max-width: 92vw; padding: 10px 12px;
-    background: rgba(16,20,24,.62); border: 1px solid rgba(255,255,255,.08);
-    border-radius: 14px; backdrop-filter: blur(10px);
+  /* 两侧按钮面板 */
+  .side-panel {
+    position: absolute; top: 52%; transform: translateY(-50%);
+    z-index: 10; display: flex; flex-direction: column; gap: 14px;
   }
-  #panel button {
-    padding: 8px 14px; font-size: 13px; color: #e8eef4; cursor: pointer;
-    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12);
-    border-radius: 8px; transition: all .15s; white-space: nowrap;
+  #panel-left { left: 24px; }
+  #panel-right { right: 24px; }
+
+  .side-panel button {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 8px; padding: 11px 18px; font-size: 14px; font-weight: 500;
+    color: #fff; cursor: pointer;
+    background: rgba(16,20,24,.72); border: 1px solid rgba(255,255,255,.18);
+    border-radius: 14px; backdrop-filter: blur(12px);
+    transition: all .2s cubic-bezier(.175,.885,.32,1.275);
+    box-shadow: 0 6px 18px rgba(0,0,0,.35); white-space: nowrap;
+    user-select: none; -webkit-user-select: none;
   }
-  #panel button:hover { background: rgba(255,255,255,.18); transform: translateY(-2px); }
-  #panel button.active { background: linear-gradient(135deg,#f7a94a,#ff6b6b); border-color: transparent; color: #fff; }
+  .side-panel button:hover {
+    transform: translateY(-2px) scale(1.06);
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    filter: brightness(1.12);
+  }
+  .side-panel button:active {
+    transform: scale(0.96);
+  }
 
   /* 提示 */
   #hint {
     position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
     z-index: 10; font-size: 12px; color: #b9c9d8; text-shadow: 0 1px 6px rgba(0,0,0,.95); pointer-events: none;
-    opacity: 1; transition: opacity 1s;
+    opacity: 1; transition: opacity 1s; white-space: nowrap;
   }
   #hint.fade { opacity: 0; }
 
@@ -106,32 +117,33 @@
 
   /* 麦克风录音学舌按钮特别样式 */
   #btn-mic {
-    background: linear-gradient(135deg, #ff5252, #ff7043) !important;
+    background: linear-gradient(135deg, #ff416c, #ff4b2b) !important;
     border: 1px solid rgba(255,255,255,.35) !important;
     color: #fff !important;
     font-weight: 600;
-    box-shadow: 0 0 14px rgba(255,82,82,.45);
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    user-select: none;
-    -webkit-user-select: none;
+    box-shadow: 0 0 18px rgba(255,65,108,.55) !important;
     touch-action: none;
   }
-  #btn-mic:hover { transform: translateY(-2px) scale(1.03); box-shadow: 0 0 20px rgba(255,82,82,.65); }
+  #btn-mic:hover { transform: translateY(-2px) scale(1.07) !important; box-shadow: 0 0 26px rgba(255,65,108,.75) !important; }
   #btn-mic.recording {
-    background: linear-gradient(135deg, #e53935, #c2185b) !important;
-    box-shadow: 0 0 24px rgba(229,57,53,.9);
+    background: linear-gradient(135deg, #d50000, #c51162) !important;
+    box-shadow: 0 0 28px rgba(213,0,0,.95) !important;
     animation: mic-pulse .8s infinite alternate;
   }
   #btn-mic.mimicking {
     background: linear-gradient(135deg, #00c853, #00b0ff) !important;
-    box-shadow: 0 0 20px rgba(0,200,83,.8);
+    box-shadow: 0 0 24px rgba(0,200,83,.85) !important;
     animation: mic-pulse .6s infinite alternate;
   }
   @keyframes mic-pulse {
     0% { transform: scale(1); filter: brightness(1); }
-    100% { transform: scale(1.07); filter: brightness(1.22); }
+    100% { transform: scale(1.08); filter: brightness(1.25); }
+  }
+
+  @media (max-width: 680px) {
+    #panel-left { left: 10px; gap: 10px; }
+    #panel-right { right: 10px; gap: 10px; }
+    .side-panel button { padding: 9px 12px; font-size: 13px; border-radius: 11px; }
   }
 </style>
 </head>
@@ -141,10 +153,11 @@
     <h1>🐱 会说话的汤姆猫</h1>
     <p>Three.js · GLB 模型 · 骨骼动画</p>
   </div>
-  <div id="hint">🖱️ 拖拽旋转 · 点击猫咪打它一下 · 按住或点击【🎙️ 对汤姆猫说话】学舌</div>
+  <div id="hint">🖱️ 拖拽旋转 · 点击猫咪互动 · 点击两侧按钮 · 【🎙️ 学我说话】</div>
   <button id="sound-toggle" title="音效开关" aria-label="音效开关">🔊</button>
   <div id="bubble"></div>
-  <div id="panel"></div>
+  <div id="panel-left" class="side-panel"></div>
+  <div id="panel-right" class="side-panel"></div>
   <div id="loader">
     <div class="paw">🐾</div>
     <div class="bar"><i id="bar-fill"></i></div>
@@ -451,10 +464,12 @@ loader.load(
     animations = gltf.animations || [];
     if (animations.length) {
       mixer = new THREE.AnimationMixer(model);
-      buildPanel();
-      playAnimation(0); // 默认播放第一个动画
+      initIdleAnimations();
+      buildPanels();
+      playNextRandomIdle();
+      scheduleNextIdleSwitch();
     } else {
-      buildPanel();
+      buildPanels();
     }
 
     // 加载完成
@@ -473,53 +488,85 @@ loader.load(
   }
 );
 
-/* ---------- 动画控制 ---------- */
-const ANIM_NAME_MAP = {
-  'tomT3adult_idleL_Action1': '待机 1',
-  'tomT3adult_idleL_Action2': '待机 2',
-  'tomT3adult_idleL_Action3': '待机 3',
-  'tomT3adult_idleL_Action4': '待机 4',
-  'tomT3adult_idleL_Breathing': '呼吸',
-  'tomT3adult_specialFoodL_Spicy': '吃辣椒 🌶️'
-};
+/* ---------- 动画控制与待机自动轮换系统 ---------- */
+let idleAnimIndices = [];
+let idleTimer = null;
+let currentIdleIndex = -1;
+let isBusyWithAction = false;
+
+function initIdleAnimations() {
+  idleAnimIndices = [];
+  animations.forEach((clip, i) => {
+    if (/idle|breathing/i.test(clip.name)) {
+      idleAnimIndices.push(i);
+    }
+  });
+  if (!idleAnimIndices.length && animations.length) {
+    idleAnimIndices = [0];
+  }
+}
+
+function playNextRandomIdle() {
+  if (!idleAnimIndices.length) return;
+  // 尽量选择与当前不同的待机动画
+  let candidates = idleAnimIndices.filter(i => i !== currentIdleIndex);
+  if (!candidates.length) candidates = idleAnimIndices;
+  const picked = candidates[Math.floor(Math.random() * candidates.length)];
+  currentIdleIndex = picked;
+  playAnimation(picked);
+}
+
+function scheduleNextIdleSwitch() {
+  clearTimeout(idleTimer);
+  // 随机 5 ~ 8 秒自动变换一次待机动作，生动逼真
+  const interval = 5000 + Math.random() * 3000;
+  idleTimer = setTimeout(() => {
+    if (!isBusyWithAction && !isTomSpeaking) {
+      playNextRandomIdle();
+    }
+    scheduleNextIdleSwitch();
+  }, interval);
+}
+
 function playAnimation(index) {
   if (!mixer || !animations[index]) return;
   const next = mixer.clipAction(animations[index]);
   if (currentAction === next) return;
   if (currentAction) {
-    currentAction.fadeOut(0.3);
+    currentAction.fadeOut(0.4);
   }
-  next.reset().fadeIn(0.3).play();
+  next.reset().fadeIn(0.4).play();
   currentAction = next;
-  document.querySelectorAll('#panel button').forEach((btn, i) => {
-    btn.classList.toggle('active', i === index);
-  });
 }
 
-function buildPanel() {
-  const panel = document.getElementById('panel');
-  animations.forEach((clip, i) => {
-    const btn = document.createElement('button');
-    btn.textContent = ANIM_NAME_MAP[clip.name] || clip.name || ('动画 ' + (i + 1));
-    btn.addEventListener('click', () => playAnimation(i));
-    panel.appendChild(btn);
-  });
+function buildPanels() {
+  const panelLeft = document.getElementById('panel-left');
+  const panelRight = document.getElementById('panel-right');
+  if (!panelLeft || !panelRight) return;
+  panelLeft.innerHTML = '';
+  panelRight.innerHTML = '';
 
-  // 互动按钮
-  setupMicButton(panel);
-  addExtraBtn(panel, '说话 💬', doTalk);
-  addExtraBtn(panel, '喝牛奶 🥛', doMilk);
-  addExtraBtn(panel, '放屁 💨', doFart);
-  addExtraBtn(panel, '恶搞 🤪', doPrank);
+  // 左侧互动按钮：喝牛奶、吃辣椒、放屁
+  addSideBtn(panelLeft, '🥛 喝牛奶', doMilk, 'linear-gradient(135deg,#38ef7d,#11998e)');
+  addSideBtn(panelLeft, '🌶️ 吃辣椒', doSpicy, 'linear-gradient(135deg,#ff416c,#ff4b2b)');
+  addSideBtn(panelLeft, '💨 放个屁', doFart, 'linear-gradient(135deg,#8e2de2,#4a00e0)');
+
+  // 右侧互动按钮：学我说话 (变声)、说话台词、恶搞
+  setupMicButton(panelRight);
+  addSideBtn(panelRight, '💬 说话', doTalk, 'linear-gradient(135deg,#00b4db,#0083b0)');
+  addSideBtn(panelRight, '🤪 恶搞', doPrank, 'linear-gradient(135deg,#f7971e,#ffd200)');
 }
 
-function addExtraBtn(panel, label, fn) {
+function addSideBtn(panel, label, fn, bg) {
   const btn = document.createElement('button');
   btn.textContent = label;
-  btn.style.background = 'linear-gradient(135deg,#4fc3f7,#7c6bff)';
-  btn.style.borderColor = 'transparent';
+  if (bg) {
+    btn.style.background = bg;
+    btn.style.border = '1px solid rgba(255,255,255,.25)';
+  }
   btn.addEventListener('click', fn);
   panel.appendChild(btn);
+  return btn;
 }
 
 /* ---------- 音效与语音系统（高调卡通猫音 + 麦克风变声学舌） ---------- */
@@ -882,7 +929,7 @@ function setupMicButton(panel) {
   btn.id = 'btn-mic';
   btn.className = 'btn-mic';
   btn.title = '按住说话或点击开启倾听';
-  btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">对汤姆猫说话 (学舌)</span>';
+  btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">学我说话</span>';
   panel.appendChild(btn);
 
   let isRecording = false;
@@ -954,7 +1001,7 @@ function setupMicButton(panel) {
     dummyGain.connect(ctx.destination);
 
     btn.classList.add('recording');
-    btn.innerHTML = '<span class="mic-icon">🔴</span><span class="mic-txt">倾听中... 请说话</span>';
+    btn.innerHTML = '<span class="mic-icon">🔴</span><span class="mic-txt">倾听中...</span>';
     showBubble('👂 倾听中... 对我说话吧！', 8000);
     playRandomIdle();
 
@@ -971,7 +1018,7 @@ function setupMicButton(panel) {
 
     btn.classList.remove('recording');
     btn.classList.add('mimicking');
-    btn.innerHTML = '<span class="mic-icon">😸</span><span class="mic-txt">汤姆猫复述中...</span>';
+    btn.innerHTML = '<span class="mic-icon">😸</span><span class="mic-txt">复述中...</span>';
 
     if (scriptNode) {
       try { scriptNode.disconnect(); } catch(e){}
@@ -989,7 +1036,7 @@ function setupMicButton(panel) {
     const duration = performance.now() - recordStartTime;
     if (duration < 350 || audioChunks.length === 0) {
       btn.classList.remove('mimicking');
-      btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">对汤姆猫说话 (学舌)</span>';
+      btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">学我说话</span>';
       showBubble('喵？录音太短啦，按住多对我说两句吧！', 2200);
       return;
     }
@@ -1009,7 +1056,7 @@ function setupMicButton(panel) {
 
     playTomMimic(audioBuf, () => {
       btn.classList.remove('mimicking');
-      btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">对汤姆猫说话 (学舌)</span>';
+      btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">学我说话</span>';
     });
   }
 
@@ -1073,15 +1120,10 @@ function spawnHitFx(x, y) {
   app.classList.add('shake');
 }
 
-function playRandomIdle() {
-  if (!animations.length) return;
-  const idleIdx = animations.findIndex(a => /idle/i.test(a.name));
-  const pool = idleIdx >= 0 ? [idleIdx] : animations.map((_, i) => i);
-  playAnimation(pool[Math.floor(Math.random() * pool.length)]);
-}
-
 function triggerTalkAction(duration = 2.0) {
   isTomSpeaking = true;
+  isBusyWithAction = true;
+  clearTimeout(idleTimer);
   const talkAnimIdx = findAnimByPattern(/Action2|Action3|Action1/i);
   if (talkAnimIdx !== null) {
     playAnimation(talkAnimIdx);
@@ -1089,14 +1131,16 @@ function triggerTalkAction(duration = 2.0) {
   clearTimeout(talkTimer);
   talkTimer = setTimeout(() => {
     isTomSpeaking = false;
-    playRandomIdle();
+    isBusyWithAction = false;
+    playNextRandomIdle();
+    scheduleNextIdleSwitch();
   }, Math.max(900, duration * 1000));
 }
 
 /* ---------- 互动动作 ---------- */
 const TOM_TALK_QUOTES = [
   '我是会说话的汤姆猫！很高兴认识你！',
-  '快按麦克风跟我说话呀，我学你说话！',
+  '快按右侧麦克风跟我说话呀，我学你说话！',
   '喵呜～今天的小鱼干真香！',
   '别老戳我肚子，我很怕痒的，喵哈哈！',
   '喵呜～今天天气真好，摸摸我吧！',
@@ -1137,7 +1181,8 @@ function doTalk() {
       };
       utter.onend = () => {
         isTomSpeaking = false;
-        playRandomIdle();
+        playNextRandomIdle();
+        scheduleNextIdleSwitch();
       };
       utter.onerror = () => {
         isTomSpeaking = false;
@@ -1159,13 +1204,48 @@ function doTalk() {
 function doMilk() {
   sfxMilk();
   const idx = findAnimByPattern(/specialFood/i);
-  if (idx !== null) playAnimation(idx); else playRandomIdle();
-  showBubble('咕咚咕咚…🥛 好喝！', 2200);
+  isBusyWithAction = true;
+  clearTimeout(idleTimer);
+
+  if (idx !== null) playAnimation(idx);
+  else playNextRandomIdle();
+
+  showBubble('咕咚咕咚…🥛 好喝！', 2400);
+
+  setTimeout(() => {
+    isBusyWithAction = false;
+    playNextRandomIdle();
+    scheduleNextIdleSwitch();
+  }, 2600);
+}
+
+function doSpicy() {
+  const idx = findAnimByPattern(/spicy|specialFood/i);
+  isBusyWithAction = true;
+  clearTimeout(idleTimer);
+
+  if (idx !== null) playAnimation(idx);
+  else playNextRandomIdle();
+
+  sfxBoing();
+  showBubble('好辣好辣！🌶️🔥 呼呼呼～！', 3200);
+
+  setTimeout(() => {
+    isBusyWithAction = false;
+    playNextRandomIdle();
+    scheduleNextIdleSwitch();
+  }, 3400);
 }
 
 function doFart() {
   sfxFart();
   showBubble('噗～～💨', 1400);
+  isBusyWithAction = true;
+  clearTimeout(idleTimer);
+  setTimeout(() => {
+    isBusyWithAction = false;
+    scheduleNextIdleSwitch();
+  }, 1600);
 }
 
 function doPrank() {
@@ -1176,7 +1256,17 @@ function doPrank() {
     sfxTomMeow(1);
     showBubble('啦啦啦～🎵 喵喵喵 喵！', 2400);
   }
-  if (animations.length) playAnimation(Math.floor(Math.random() * animations.length));
+  isBusyWithAction = true;
+  clearTimeout(idleTimer);
+  if (animations.length) {
+    const specialIdx = findAnimByPattern(/specialFood|Action3|Action4/i);
+    if (specialIdx !== null) playAnimation(specialIdx);
+  }
+  setTimeout(() => {
+    isBusyWithAction = false;
+    playNextRandomIdle();
+    scheduleNextIdleSwitch();
+  }, 2600);
 }
 
 /* ---------- 点击猫咪：被打效果 ---------- */
@@ -1199,7 +1289,13 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     sfxHit();
     spawnHitFx(e.clientX, e.clientY);
     showBubble(HIT_TEXTS[Math.floor(Math.random() * HIT_TEXTS.length)]);
-    playRandomIdle();
+    isBusyWithAction = true;
+    clearTimeout(idleTimer);
+    playNextRandomIdle();
+    setTimeout(() => {
+      isBusyWithAction = false;
+      scheduleNextIdleSwitch();
+    }, 1800);
   }
 });
 
