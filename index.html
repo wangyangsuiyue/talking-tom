@@ -145,6 +145,28 @@
     #panel-right { right: 10px; gap: 10px; }
     .side-panel button { padding: 9px 12px; font-size: 13px; border-radius: 11px; }
   }
+
+  /* 击倒强震与眩晕小鸟 */
+  #app.shake-hard { animation: shake-hard .55s cubic-bezier(.36,.07,.19,.97) both; }
+  @keyframes shake-hard {
+    0%,100% { transform: translate(0,0) rotate(0deg); }
+    15% { transform: translate(-12px, 8px) rotate(-2deg); }
+    30% { transform: translate(11px, -9px) rotate(2deg); }
+    45% { transform: translate(-9px, 6px) rotate(-1.2deg); }
+    60% { transform: translate(7px, -5px) rotate(0.8deg); }
+    75% { transform: translate(-4px, 3px) rotate(-0.5deg); }
+    90% { transform: translate(2px, -2px) rotate(0.2deg); }
+  }
+
+  .dizzy-star {
+    position: absolute; z-index: 35; pointer-events: none; font-size: 26px;
+    animation: dizzy-orbit 1.4s linear infinite; will-change: transform;
+  }
+  @keyframes dizzy-orbit {
+    0%   { transform: rotate(0deg) translateX(var(--radius, 60px)) rotate(0deg); }
+    100% { transform: rotate(360deg) translateX(var(--radius, 60px)) rotate(-360deg); }
+  }
+
 </style>
 </head>
 <body>
@@ -153,7 +175,7 @@
     <h1>🐱 会说话的汤姆猫</h1>
     <p>Three.js · GLB 模型 · 骨骼动画</p>
   </div>
-  <div id="hint">🖱️ 拖拽旋转 · 点击猫咪互动 · 点击两侧按钮 · 【🎙️ 学我说话】</div>
+  <div id="hint">🖱️ 连续打击会倒下 · 点击两侧按钮 · 【💃 跳舞】· 【🎙️ 学我说话】</div>
   <button id="sound-toggle" title="音效开关" aria-label="音效开关">🔊</button>
   <div id="bubble"></div>
   <div id="panel-left" class="side-panel"></div>
@@ -414,9 +436,26 @@ let mixer = null;
 let currentAction = null;
 let animations = [];
 let tomMeshes = [];
+let tomModel = null;
+let baseModelPos = new THREE.Vector3();
+let baseModelRot = new THREE.Euler();
+let headBone = null;
 let jawBone = null;
 let isTomSpeaking = false;
 let talkTimer = null;
+
+// 跳舞与连续打击状态
+let isDancing = false;
+let danceStartTime = 0;
+let danceTimer = null;
+let danceAudioInterval = null;
+let danceParticleInterval = null;
+
+let isKnockedDown = false;
+let knockdownPhase = 'none'; // 'dizzy' | 'falling' | 'flat' | 'getting_up'
+let knockdownTimer = 0;
+let comboHits = 0;
+let lastHitTime = 0;
 
 loader.load(
   MODEL_URL,
@@ -548,6 +587,7 @@ function buildPanels() {
 
   // 左侧互动按钮：喝牛奶、吃辣椒、放屁
   addSideBtn(panelLeft, '🥛 喝牛奶', doMilk, 'linear-gradient(135deg,#38ef7d,#11998e)');
+  addSideBtn(panelLeft, '💃 跳舞', doDance, 'linear-gradient(135deg,#f093fb,#f5576c)');
   addSideBtn(panelLeft, '🌶️ 吃辣椒', doSpicy, 'linear-gradient(135deg,#ff416c,#ff4b2b)');
   addSideBtn(panelLeft, '💨 放个屁', doFart, 'linear-gradient(135deg,#8e2de2,#4a00e0)');
 
@@ -654,6 +694,126 @@ soundToggle.addEventListener('click', () => {
   soundToggle.classList.toggle('muted', !soundOn);
   if (masterGain && actx) masterGain.gain.setTargetAtTime(soundOn ? 0.75 : 0, actx.currentTime, 0.02);
 });
+
+// 欢快跳舞舞曲节拍合成（低音鼓 + 踩镲 + 迪斯科旋律琶音）
+function sfxDanceBeat(step = 0) {
+  const ctx = audioCtx();
+  const t0 = ctx.currentTime + 0.01;
+
+  // 1. 动感低音底鼓 (Four-on-the-floor kick)
+  const kick = ctx.createOscillator();
+  kick.type = 'sine';
+  kick.frequency.setValueAtTime(140, t0);
+  kick.frequency.exponentialRampToValueAtTime(36, t0 + 0.12);
+  const kickG = ctx.createGain();
+  ampEnv(kickG, t0, 0.55, 0.003, 0.14);
+  kick.connect(kickG).connect(sfxBus);
+  kick.start(t0); kick.stop(t0 + 0.16);
+
+  // 2. 踩镲 (Hi-hat)
+  if (step % 2 === 1) {
+    noiseLayer(ctx, t0, 0.05, { type: 'highpass', freq: 6500, q: 2, peak: 0.14 });
+  }
+
+  // 3. 旋律合成器琶音 (Disco Synth Bassline)
+  const notes = [220, 261.6, 293.7, 329.6, 392.0, 440, 523.3, 587.3];
+  const freq = notes[step % notes.length];
+  const synth = ctx.createOscillator();
+  synth.type = (step % 4 === 0) ? 'sawtooth' : 'triangle';
+  synth.frequency.setValueAtTime(freq, t0);
+  const synthFilt = ctx.createBiquadFilter();
+  synthFilt.type = 'lowpass';
+  synthFilt.frequency.setValueAtTime(1600, t0);
+  synthFilt.frequency.exponentialRampToValueAtTime(500, t0 + 0.18);
+  const synthG = ctx.createGain();
+  ampEnv(synthG, t0, 0.32, 0.01, 0.2);
+  synth.connect(synthFilt).connect(synthG).connect(sfxBus);
+  synth.start(t0); synth.stop(t0 + 0.22);
+}
+
+// 眩晕小哨音
+function sfxDizzy() {
+  const ctx = audioCtx();
+  const t0 = ctx.currentTime + 0.01;
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(1150, t0);
+  osc.frequency.exponentialRampToValueAtTime(260, t0 + 0.55);
+
+  const lfo = ctx.createOscillator();
+  lfo.frequency.setValueAtTime(20, t0);
+  const lg = ctx.createGain();
+  lg.gain.setValueAtTime(60, t0);
+  lfo.connect(lg).connect(osc.frequency);
+
+  const g = ctx.createGain();
+  ampEnv(g, t0, 0.38, 0.01, 0.55);
+  osc.connect(g).connect(sfxBus);
+  osc.start(t0); osc.stop(t0 + 0.58);
+  lfo.start(t0); lfo.stop(t0 + 0.58);
+}
+
+// 摔倒巨响 (Duang! Boom!)
+function sfxBodySlam() {
+  const ctx = audioCtx();
+  const t0 = ctx.currentTime + 0.01;
+
+  // 超重低音撞击
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(120, t0);
+  osc.frequency.exponentialRampToValueAtTime(25, t0 + 0.35);
+  const g = ctx.createGain();
+  ampEnv(g, t0, 0.85, 0.002, 0.4);
+  osc.connect(g).connect(sfxBus);
+  osc.start(t0); osc.stop(t0 + 0.45);
+
+  // 身体拍击地面噪声
+  noiseLayer(ctx, t0, 0.22, { type: 'lowpass', freq: 700, q: 1.2, peak: 0.45 });
+
+  // 弹簧回弹滑稽音
+  const boing = ctx.createOscillator();
+  boing.type = 'triangle';
+  boing.frequency.setValueAtTime(320, t0 + 0.06);
+  boing.frequency.exponentialRampToValueAtTime(75, t0 + 0.32);
+  const bg = ctx.createGain();
+  ampEnv(bg, t0 + 0.06, 0.32, 0.01, 0.28);
+  boing.connect(bg).connect(sfxBus);
+  boing.start(t0 + 0.06); boing.stop(t0 + 0.36);
+}
+
+// 倒地时小鸟叽叽喳喳叫
+function sfxBirdChirp() {
+  const ctx = audioCtx();
+  const t0 = ctx.currentTime + 0.01;
+  for (let i = 0; i < 2; i++) {
+    const t = t0 + i * 0.14;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(2200, t);
+    osc.frequency.exponentialRampToValueAtTime(3100, t + 0.05);
+    osc.frequency.exponentialRampToValueAtTime(2400, t + 0.1);
+    const g = ctx.createGain();
+    ampEnv(g, t, 0.18, 0.01, 0.1);
+    osc.connect(g).connect(sfxBus);
+    osc.start(t); osc.stop(t + 0.12);
+  }
+}
+
+// 倒地时被戳的微弱哼唧
+function sfxGroan() {
+  const ctx = audioCtx();
+  const t0 = ctx.currentTime + 0.01;
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(340, t0);
+  osc.frequency.exponentialRampToValueAtTime(180, t0 + 0.25);
+  const g = ctx.createGain();
+  ampEnv(g, t0, 0.3, 0.02, 0.25);
+  osc.connect(g).connect(sfxBus);
+  osc.start(t0); osc.stop(t0 + 0.28);
+}
+
 
 // 汤姆猫卡通猫叫合成（高频俏皮调频，模拟 "喵呜～" 与 "咪喵！"）
 function sfxTomMeow(kind = 0) {
@@ -1201,6 +1361,147 @@ function doTalk() {
   }
 }
 
+/* ---------- 跳舞与连击倒下系统 ---------- */
+function spawnDanceFx() {
+  const emojis = ['🎵', '🎶', '✨', '💃', '⭐', '🎉', '💫', '🔥'];
+  const el = document.createElement('span');
+  el.className = 'hit-fx';
+  el.textContent = emojis[Math.floor(Math.random() * emojis.length)];
+  el.style.left = (innerWidth * 0.5 + (Math.random() * 260 - 130)) + 'px';
+  el.style.top = (innerHeight * 0.55 + (Math.random() * 120 - 60)) + 'px';
+  el.style.setProperty('--dx', (Math.random() * 160 - 80) + 'px');
+  el.style.setProperty('--dy', (Math.random() * -140 - 40) + 'px');
+  el.style.setProperty('--rot', (Math.random() * 360 - 180) + 'deg');
+  document.getElementById('app').appendChild(el);
+  setTimeout(() => el.remove(), 850);
+}
+
+function doDance() {
+  if (isDancing || isKnockedDown) return;
+  isDancing = true;
+  isBusyWithAction = true;
+  clearTimeout(idleTimer);
+  danceStartTime = performance.now();
+
+  // 选取动感动作并加速
+  const danceAnimIdx = findAnimByPattern(/Action3|Action2|spicy|Action1/i);
+  if (danceAnimIdx !== null) {
+    playAnimation(danceAnimIdx);
+    if (currentAction) currentAction.timeScale = 1.35;
+  }
+
+  showBubble('一起摇摆～ 喵嗨起来！🎵💃✨', 4500);
+
+  // 播放舞曲音效与发射粒子
+  let beatStep = 0;
+  clearInterval(danceAudioInterval);
+  danceAudioInterval = setInterval(() => {
+    if (!isDancing) return;
+    sfxDanceBeat(beatStep++);
+    spawnDanceFx();
+  }, 220);
+
+  clearTimeout(danceTimer);
+  danceTimer = setTimeout(() => {
+    isDancing = false;
+    clearInterval(danceAudioInterval);
+    if (currentAction) currentAction.timeScale = 1.0;
+    if (wallGlow) wallGlow.color.setHex(0xffb066);
+
+    // 舞蹈结束秀
+    sfxTomMeow(1);
+    showBubble('呼～跳得好过瘾！喵哈哈～😸', 2400);
+
+    setTimeout(() => {
+      isBusyWithAction = false;
+      playNextRandomIdle();
+      scheduleNextIdleSwitch();
+    }, 1800);
+  }, 5400);
+}
+
+// 连续打击击倒状态机
+let dizzyElements = [];
+function spawnDizzyStars() {
+  clearDizzyStars();
+  const stars = ['💫', '🐤', '⭐', '💫', '🐤'];
+  stars.forEach((emoji, i) => {
+    const el = document.createElement('span');
+    el.className = 'dizzy-star';
+    el.textContent = emoji;
+    el.style.left = '50%';
+    el.style.top = '36%';
+    el.style.setProperty('--radius', (45 + (i % 2) * 20) + 'px');
+    el.style.animationDelay = (i * 0.28) + 's';
+    document.getElementById('app').appendChild(el);
+    dizzyElements.push(el);
+  });
+}
+
+function clearDizzyStars() {
+  dizzyElements.forEach(el => el.remove());
+  dizzyElements = [];
+}
+
+function triggerKnockdown() {
+  if (isKnockedDown) return;
+  isKnockedDown = true;
+  isBusyWithAction = true;
+  isDancing = false;
+  clearInterval(danceAudioInterval);
+  clearTimeout(idleTimer);
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+
+  // 阶段 1：眩晕摇晃 (~0.55秒)
+  knockdownPhase = 'dizzy';
+  knockdownTimer = performance.now();
+  spawnDizzyStars();
+  sfxDizzy();
+  showBubble('哎呀呀～眼冒金星了！😵💫', 1600);
+
+  // 阶段 2：向后猛烈倒地 (~0.45秒)
+  setTimeout(() => {
+    knockdownPhase = 'falling';
+    knockdownTimer = performance.now();
+    sfxBodySlam();
+    const app = document.getElementById('app');
+    app.classList.remove('shake-hard');
+    void app.offsetWidth;
+    app.classList.add('shake-hard');
+
+    // 阶段 3：倒地不起 (~2.4秒)
+    setTimeout(() => {
+      knockdownPhase = 'flat';
+      showBubble('呜呜…起不来了…😵💫', 2200);
+      sfxBirdChirp();
+      const chirpTimer = setInterval(() => {
+        if (knockdownPhase === 'flat') sfxBirdChirp();
+        else clearInterval(chirpTimer);
+      }, 900);
+
+      // 阶段 4：重新爬起来 (~0.85秒)
+      setTimeout(() => {
+        clearInterval(chirpTimer);
+        clearDizzyStars();
+        knockdownPhase = 'getting_up';
+        knockdownTimer = performance.now();
+
+        setTimeout(() => {
+          knockdownPhase = 'none';
+          isKnockedDown = false;
+          showBubble('好汉不吃眼前亏，别再打啦喵！😼', 2400);
+          sfxTomMeow(0);
+          setTimeout(() => {
+            isBusyWithAction = false;
+            playNextRandomIdle();
+            scheduleNextIdleSwitch();
+          }, 1200);
+        }, 850);
+      }, 2400);
+    }, 450);
+  }, 550);
+}
+
 function doMilk() {
   sfxMilk();
   const idx = findAnimByPattern(/specialFood/i);
@@ -1285,17 +1586,42 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(tomMeshes, false);
   if (hits.length && performance.now() > clickCooldown) {
-    clickCooldown = performance.now() + 600;
-    sfxHit();
-    spawnHitFx(e.clientX, e.clientY);
-    showBubble(HIT_TEXTS[Math.floor(Math.random() * HIT_TEXTS.length)]);
-    isBusyWithAction = true;
-    clearTimeout(idleTimer);
-    playNextRandomIdle();
-    setTimeout(() => {
-      isBusyWithAction = false;
-      scheduleNextIdleSwitch();
-    }, 1800);
+    clickCooldown = performance.now() + 450;
+    const now = performance.now();
+
+    // 如果当前正处于倒地状态，点击触发哀鸣呻吟
+    if (isKnockedDown) {
+      sfxGroan();
+      spawnHitFx(e.clientX, e.clientY);
+      showBubble('别戳啦…疼死喵了…🤕', 1200);
+      return;
+    }
+
+    // 连击检测：1.6 秒内连续打 3 次触发击倒
+    if (now - lastHitTime < 1600) {
+      comboHits++;
+    } else {
+      comboHits = 1;
+    }
+    lastHitTime = now;
+
+    if (comboHits >= 3) {
+      comboHits = 0;
+      triggerKnockdown();
+    } else {
+      sfxHit();
+      spawnHitFx(e.clientX, e.clientY);
+      showBubble(HIT_TEXTS[Math.floor(Math.random() * HIT_TEXTS.length)]);
+      isBusyWithAction = true;
+      clearTimeout(idleTimer);
+      playNextRandomIdle();
+      setTimeout(() => {
+        if (!isKnockedDown) {
+          isBusyWithAction = false;
+          scheduleNextIdleSwitch();
+        }
+      }, 1800);
+    }
   }
 });
 
