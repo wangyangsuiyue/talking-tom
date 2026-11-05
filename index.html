@@ -441,6 +441,8 @@ let baseModelPos = new THREE.Vector3();
 let baseModelRot = new THREE.Euler();
 let headBone = null;
 let jawBone = null;
+let baseHeadRot = new THREE.Euler();
+let baseJawRot = new THREE.Euler();
 let isTomSpeaking = false;
 let talkTimer = null;
 
@@ -496,6 +498,8 @@ loader.load(
     tomModel = model; window.tomModel = model;
     baseModelPos.copy(model.position);
     baseModelRot.copy(model.rotation);
+    if (headBone) baseHeadRot.copy(headBone.rotation);
+    if (jawBone) baseJawRot.copy(jawBone.rotation);
 
     // 手动贴图兜底（GLTFLoader 内嵌贴图解码失败时保证有颜色）
     applyManualTextures(model);
@@ -590,7 +594,8 @@ function buildPanels() {
 
   // 左侧互动按钮：喝牛奶、吃辣椒、放屁
   addSideBtn(panelLeft, '🥛 喝牛奶', doMilk, 'linear-gradient(135deg,#38ef7d,#11998e)');
-  addSideBtn(panelLeft, '💃 跳舞', doDance, 'linear-gradient(135deg,#f093fb,#f5576c)');
+  const danceBtn = addSideBtn(panelLeft, '💃 跳舞', doDance, 'linear-gradient(135deg,#f093fb,#f5576c)');
+  danceBtn.id = 'btn-dance';
   addSideBtn(panelLeft, '🌶️ 吃辣椒', doSpicy, 'linear-gradient(135deg,#ff416c,#ff4b2b)');
   addSideBtn(panelLeft, '💨 放个屁', doFart, 'linear-gradient(135deg,#8e2de2,#4a00e0)');
 
@@ -1380,7 +1385,16 @@ function spawnDanceFx() {
 }
 
 function doDance() {
-  if (isDancing || isKnockedDown) return;
+  if (isKnockedDown) return;
+  // 如果已经在跳舞，再次点击可立即停止
+  if (isDancing) {
+    stopDance();
+    return;
+  }
+  startDance();
+}
+
+function startDance() {
   isDancing = true;
   isBusyWithAction = true;
   clearTimeout(idleTimer);
@@ -1388,21 +1402,23 @@ function doDance() {
 
   audioCtx();
 
-  // 选取动感动作并大幅提速
-  const danceAnimIdx = findAnimByPattern(/spicy|Action3|Action2/i);
+  const danceBtn = document.getElementById('btn-dance');
+  if (danceBtn) danceBtn.textContent = '⏸️ 停止跳舞';
+
+  // 动作适度加速
+  const danceAnimIdx = findAnimByPattern(/Action3|Action2|spicy|Action1/i);
   if (danceAnimIdx !== null && mixer && animations[danceAnimIdx]) {
     const next = mixer.clipAction(animations[danceAnimIdx]);
     if (currentAction && currentAction !== next) {
       currentAction.fadeOut(0.25);
     }
     next.reset().fadeIn(0.25).play();
-    next.timeScale = 1.45;
+    next.timeScale = 1.35;
     currentAction = next;
   }
 
-  showBubble('一起摇摆～ 喵嗨起来！🎵💃✨', 4800);
+  showBubble('一起摇摆～ 喵嗨起来！🎵💃✨', 3500);
 
-  // 播放舞曲音效与发射粒子
   let beatStep = 0;
   clearInterval(danceAudioInterval);
   danceAudioInterval = setInterval(() => {
@@ -1411,25 +1427,47 @@ function doDance() {
     spawnDanceFx();
   }, 220);
 
+  // 3.8秒后自动平稳结束跳舞
   clearTimeout(danceTimer);
   danceTimer = setTimeout(() => {
-    isDancing = false;
-    clearInterval(danceAudioInterval);
-    if (currentAction) currentAction.timeScale = 1.0;
-    if (wallGlow) wallGlow.color.setHex(0xffb066);
+    stopDance();
+  }, 3800);
+}
 
-    // 舞蹈结束秀
-    sfxTomMeow(1);
-    showBubble('呼～跳得好过瘾！喵哈哈～😸', 2400);
+function stopDance() {
+  if (!isDancing) return;
+  isDancing = false;
+  clearTimeout(danceTimer);
+  clearInterval(danceAudioInterval);
 
-    setTimeout(() => {
+  const danceBtn = document.getElementById('btn-dance');
+  if (danceBtn) danceBtn.textContent = '💃 跳舞';
+
+  if (currentAction) currentAction.timeScale = 1.0;
+  if (wallGlow) wallGlow.color.setHex(0xffb066);
+
+  // 立即绝对归位，杜绝任何抖动残留
+  if (tomModel) {
+    tomModel.position.copy(baseModelPos);
+    tomModel.rotation.copy(baseModelRot);
+  }
+  if (headBone) headBone.rotation.copy(baseHeadRot);
+  if (jawBone) jawBone.rotation.copy(baseJawRot);
+
+  sfxTomMeow(1);
+  showBubble('呼～跳得好过瘾！喵哈哈～😸', 2000);
+
+  setTimeout(() => {
+    if (!isKnockedDown && !isDancing) {
       isBusyWithAction = false;
       playNextRandomIdle();
       scheduleNextIdleSwitch();
-    }, 1800);
-  }, 5600);
+    }
+  }, 1200);
 }
 
+// 连续打击击倒状态机
+let dizzyElements = [];
 function spawnDizzyStars() {
   clearDizzyStars();
   const stars = ['💫', '🐤', '⭐', '💫', '🐤'];
@@ -1439,8 +1477,8 @@ function spawnDizzyStars() {
     el.textContent = emoji;
     el.style.left = '50%';
     el.style.top = '36%';
-    el.style.setProperty('--radius', (45 + (i % 2) * 20) + 'px');
-    el.style.animationDelay = (i * 0.28) + 's';
+    el.style.setProperty('--radius', (45 + (i % 2) * 15) + 'px');
+    el.style.animationDelay = (i * 0.25) + 's';
     document.getElementById('app').appendChild(el);
     dizzyElements.push(el);
   });
@@ -1451,24 +1489,30 @@ function clearDizzyStars() {
   dizzyElements = [];
 }
 
+let kdTimers = [];
+function clearKdTimers() {
+  kdTimers.forEach(t => clearTimeout(t));
+  kdTimers = [];
+}
+
 function triggerKnockdown() {
   if (isKnockedDown) return;
   isKnockedDown = true;
   isBusyWithAction = true;
-  isDancing = false;
-  clearInterval(danceAudioInterval);
+  if (isDancing) stopDance();
   clearTimeout(idleTimer);
+  clearKdTimers();
   if (window.speechSynthesis) window.speechSynthesis.cancel();
 
-  // 阶段 1：眩晕摇晃 (~0.55秒)
+  // 阶段 1：适度眩晕晃摆 (0.4秒)
   knockdownPhase = 'dizzy';
   knockdownTimer = performance.now();
   spawnDizzyStars();
   sfxDizzy();
-  showBubble('哎呀呀～眼冒金星了！😵💫', 1600);
+  showBubble('哎呀呀～眼冒金星了！😵💫', 1400);
 
-  // 阶段 2：向后猛烈倒地 (~0.45秒)
-  setTimeout(() => {
+  // 阶段 2：向后摔倒 (0.35秒)
+  kdTimers.push(setTimeout(() => {
     knockdownPhase = 'falling';
     knockdownTimer = performance.now();
     sfxBodySlam();
@@ -1476,38 +1520,40 @@ function triggerKnockdown() {
     app.classList.remove('shake-hard');
     void app.offsetWidth;
     app.classList.add('shake-hard');
+    setTimeout(() => app.classList.remove('shake-hard'), 600);
 
-    // 阶段 3：倒地不起 (~2.4秒)
-    setTimeout(() => {
+    // 阶段 3：倒地不起 (1.8秒)
+    kdTimers.push(setTimeout(() => {
       knockdownPhase = 'flat';
-      showBubble('呜呜…起不来了…😵💫', 2200);
+      showBubble('呜呜…起不来了…😵💫', 1800);
       sfxBirdChirp();
-      const chirpTimer = setInterval(() => {
-        if (knockdownPhase === 'flat') sfxBirdChirp();
-        else clearInterval(chirpTimer);
-      }, 900);
 
-      // 阶段 4：重新爬起来 (~0.85秒)
-      setTimeout(() => {
-        clearInterval(chirpTimer);
+      // 阶段 4：爬起来恢复 (0.65秒)
+      kdTimers.push(setTimeout(() => {
         clearDizzyStars();
         knockdownPhase = 'getting_up';
         knockdownTimer = performance.now();
 
-        setTimeout(() => {
+        kdTimers.push(setTimeout(() => {
+          // 彻底恢复归位
           knockdownPhase = 'none';
           isKnockedDown = false;
-          showBubble('好汉不吃眼前亏，别再打啦喵！😼', 2400);
+          if (tomModel) {
+            tomModel.position.copy(baseModelPos);
+            tomModel.rotation.copy(baseModelRot);
+          }
+          if (headBone) headBone.rotation.copy(baseHeadRot);
+          if (jawBone) jawBone.rotation.copy(baseJawRot);
+
+          showBubble('好汉不吃眼前亏，别再打啦喵！😼', 2000);
           sfxTomMeow(0);
-          setTimeout(() => {
-            isBusyWithAction = false;
-            playNextRandomIdle();
-            scheduleNextIdleSwitch();
-          }, 1200);
-        }, 850);
-      }, 2400);
-    }, 450);
-  }, 550);
+          isBusyWithAction = false;
+          playNextRandomIdle();
+          scheduleNextIdleSwitch();
+        }, 650));
+      }, 1800));
+    }, 350));
+  }, 400));
 }
 
 function doMilk() {
@@ -1578,7 +1624,7 @@ function doPrank() {
   }, 2600);
 }
 
-/* ---------- 点击猫咪：被打效果 ---------- */
+/* ---------- 点击猫咪：被打与连击倒下效果 ---------- */
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 let clickCooldown = 0;
@@ -1596,14 +1642,14 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   const hits = raycaster.intersectObjects(tomMeshes, false);
 
   if (hits.length && performance.now() > clickCooldown) {
-    clickCooldown = performance.now() + 140; // 冷却缩短至140ms，畅快响应连击
+    clickCooldown = performance.now() + 140; // 冷却缩短至140ms
     const now = performance.now();
 
     // 如果当前正处于倒地状态，点击触发哀鸣呻吟
     if (isKnockedDown) {
       sfxGroan();
       spawnHitFx(e.clientX, e.clientY);
-      showBubble('别戳啦…疼死喵了…🤕', 1200);
+      showBubble('别戳啦…疼死喵了…🤕', 1000);
       return;
     }
 
@@ -1623,16 +1669,16 @@ renderer.domElement.addEventListener('pointerup', (e) => {
       sfxHit();
       spawnHitFx(e.clientX, e.clientY);
       const text = HIT_TEXTS[Math.floor(Math.random() * HIT_TEXTS.length)] + ' (' + comboHits + '/3)';
-      showBubble(text, 1200);
+      showBubble(text, 1000);
       isBusyWithAction = true;
       clearTimeout(idleTimer);
       playNextRandomIdle();
       setTimeout(() => {
-        if (!isKnockedDown) {
+        if (!isKnockedDown && !isDancing) {
           isBusyWithAction = false;
           scheduleNextIdleSwitch();
         }
-      }, 1500);
+      }, 1200);
     }
   }
 });
@@ -1649,50 +1695,58 @@ function animate() {
 
   const t = clock.getElapsedTime();
 
-  // 说话时嘴巴动作
-  if (isTomSpeaking && jawBone) {
-    jawBone.rotation.x += Math.max(0, Math.sin(t * 16)) * 0.12;
-  }
-
-  // 跳舞动作：程序化全身节拍跳跃、扭腰、摇头、彩灯
+  // 1. 跳舞：节拍上下弹跳与节奏律动 (绝对赋值，禁止累加)
   if (isDancing && tomModel) {
     const dtDance = (performance.now() - danceStartTime) * 0.001;
-    tomModel.position.y = baseModelPos.y + Math.abs(Math.sin(dtDance * 9)) * 0.16;
-    tomModel.position.x = baseModelPos.x + Math.sin(dtDance * 4.5) * 0.14;
-    tomModel.rotation.z = baseModelRot.z + Math.sin(dtDance * 4.5) * 0.18;
-    tomModel.rotation.y = baseModelRot.y + Math.sin(dtDance * 9) * 0.22;
-    if (headBone) headBone.rotation.z += Math.sin(dtDance * 9) * 0.22;
-    if (jawBone) jawBone.rotation.x += Math.max(0, Math.sin(dtDance * 14)) * 0.16;
-    if (wallGlow) wallGlow.color.setHSL((dtDance * 0.7) % 1, 0.98, 0.6);
+    tomModel.position.y = baseModelPos.y + Math.abs(Math.sin(dtDance * 7)) * 0.12;
+    tomModel.position.x = baseModelPos.x + Math.sin(dtDance * 3.5) * 0.1;
+    tomModel.rotation.z = baseModelRot.z + Math.sin(dtDance * 3.5) * 0.12;
+    tomModel.rotation.y = baseModelRot.y + Math.sin(dtDance * 7) * 0.14;
+    if (headBone) headBone.rotation.z = baseHeadRot.z + Math.sin(dtDance * 7) * 0.15;
+    if (jawBone) jawBone.rotation.x = baseJawRot.x + Math.max(0, Math.sin(dtDance * 14)) * 0.15;
+    if (wallGlow) wallGlow.color.setHSL((dtDance * 0.6) % 1, 0.95, 0.6);
   }
-  // 连续打击倒下动画：眩晕摇摆 -> 摔倒倒地 -> 躺平抽搐 -> 爬起恢复
+  // 2. 连续打击倒下动画：眩晕晃动 -> 摔倒倒地 -> 躺平抽搐 -> 爬起恢复
   else if (isKnockedDown && tomModel) {
     if (knockdownPhase === 'dizzy') {
       const elapsed = (performance.now() - knockdownTimer) * 0.001;
-      tomModel.rotation.z = baseModelRot.z + Math.sin(elapsed * 32) * 0.24;
-      if (headBone) headBone.rotation.y += Math.sin(elapsed * 36) * 0.32;
+      tomModel.rotation.z = baseModelRot.z + Math.sin(elapsed * 14) * 0.18;
+      tomModel.rotation.x = baseModelRot.x;
+      if (headBone) headBone.rotation.y = baseHeadRot.y + Math.sin(elapsed * 16) * 0.22;
     } else if (knockdownPhase === 'falling') {
-      const p = Math.min(1, (performance.now() - knockdownTimer) / 450);
+      const p = Math.min(1, (performance.now() - knockdownTimer) / 350);
       const ease = p * p;
+      tomModel.rotation.z = baseModelRot.z;
       tomModel.rotation.x = baseModelRot.x - (Math.PI / 2) * ease;
       tomModel.position.y = THREE.MathUtils.lerp(baseModelPos.y, baseModelPos.y + 0.15, ease);
       tomModel.position.z = THREE.MathUtils.lerp(baseModelPos.z, baseModelPos.z - 0.25, ease);
+      if (headBone) headBone.rotation.copy(baseHeadRot);
     } else if (knockdownPhase === 'flat') {
+      tomModel.rotation.z = baseModelRot.z;
       tomModel.rotation.x = baseModelRot.x - Math.PI / 2;
-      tomModel.position.y = baseModelPos.y + 0.15 + Math.sin(t * 3.5) * 0.015;
+      tomModel.position.y = baseModelPos.y + 0.15 + Math.sin(t * 2.5) * 0.012;
       tomModel.position.z = baseModelPos.z - 0.25;
+      if (headBone) headBone.rotation.copy(baseHeadRot);
     } else if (knockdownPhase === 'getting_up') {
-      const p = Math.min(1, (performance.now() - knockdownTimer) / 850);
+      const p = Math.min(1, (performance.now() - knockdownTimer) / 650);
       const ease = 0.5 - Math.cos(p * Math.PI) / 2;
+      tomModel.rotation.z = baseModelRot.z;
       tomModel.rotation.x = THREE.MathUtils.lerp(baseModelRot.x - Math.PI / 2, baseModelRot.x, ease);
       tomModel.position.y = THREE.MathUtils.lerp(baseModelPos.y + 0.15, baseModelPos.y, ease);
       tomModel.position.z = THREE.MathUtils.lerp(baseModelPos.z - 0.25, baseModelPos.z, ease);
+      if (headBone) headBone.rotation.copy(baseHeadRot);
     }
   }
-  // 常态确保位置与旋转归位
+  // 3. 常态：绝对归位，杜绝任何持续晃动！
   else if (tomModel) {
     tomModel.position.copy(baseModelPos);
     tomModel.rotation.copy(baseModelRot);
+    if (headBone) headBone.rotation.copy(baseHeadRot);
+    if (isTomSpeaking && jawBone) {
+      jawBone.rotation.x = baseJawRot.x + Math.max(0, Math.sin(t * 16)) * 0.12;
+    } else if (jawBone) {
+      jawBone.rotation.copy(baseJawRot);
+    }
   }
 
   ring.rotation.z += dt * 0.3;
