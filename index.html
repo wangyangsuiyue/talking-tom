@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='.9em' font-size='56'%3E%F0%9F%90%B1%3C/text%3E%3C/svg%3E">
 <title>会说话的汤姆猫 - Talking Tom 3D</title>
+<script src="gsap.min.js"></script>
+<script>
+  if (typeof gsap === 'undefined') {
+    document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"><\/script>');
+  }
+</script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #101418; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
@@ -429,7 +435,10 @@ const wallGlow = new THREE.PointLight(0xffb066, 22, 11, 2);  // 暖色氛围光�
 wallGlow.position.set(-1.2, 3.0, -1.6);
 scene.add(wallGlow);
 
-/* ---------- 加载模型 ---------- */
+/* ---------- 加载模型与场景容器 ---------- */
+const tomGroup = new THREE.Group();
+scene.add(tomGroup);
+
 const loader = new GLTFLoader();
 const barFill = document.getElementById('bar-fill');
 let mixer = null;
@@ -446,7 +455,6 @@ let baseJawRot = new THREE.Euler();
 let isTomSpeaking = false;
 let talkTimer = null;
 
-// 跳舞与连续打击状态
 // 科目三骨骼引用与初始姿态缓存
 const danceBones = {};
 const baseDanceRots = {};
@@ -464,17 +472,39 @@ const BONE_KEYS = [
   { key: 'head', name: 'c_head_00_uJnt_038' },
   { key: 'neck', name: 'c_neck_00_uJnt_037' }
 ];
+
 let isDancing = false;
-let danceStartTime = 0;
+let danceTimeline = null;
 let danceTimer = null;
 let danceAudioInterval = null;
-let danceParticleInterval = null;
+
+// GSAP 科目三驱动状态对象（只动四肢与头，躯干稳立如泰山）
+const danceState = {
+  lFootZ: 0, lFootY: 0,
+  rFootZ: 0, rFootY: 0,
+  lThighX: 0, rThighX: 0,
+  armRaise: 0,
+  lArmZ: 0, rArmZ: 0,
+  lWristRotX: 0,
+  rWristRotX: 0,
+  headTilt: 0, headNod: 0,
+  jawOpen: 0
+};
 
 let isKnockedDown = false;
-let knockdownPhase = 'none'; // 'dizzy' | 'falling' | 'flat' | 'getting_up'
-let knockdownTimer = 0;
+let kdTimeline = null;
+let dizzyElements = [];
 let comboHits = 0;
 let lastHitTime = 0;
+
+// GSAP 摔倒驱动状态对象
+const kdState = {
+  rotX: 0,
+  rotZ: 0,
+  posY: 0,
+  posZ: 0,
+  headShakeY: 0
+};
 
 loader.load(
   MODEL_URL,
@@ -484,13 +514,21 @@ loader.load(
       if (obj.isMesh) {
         obj.castShadow = true;
         obj.receiveShadow = true;
-        obj.frustumCulled = false; // 蒙皮网格防止被错误剔除
+        obj.frustumCulled = false;
         tomMeshes.push(obj);
       }
     });
 
-    // 自动居中与缩放：蒙皮模型的 geometry 包围盒不可靠（绑定姿势空间小、骨骼驱动实际尺寸大），
-    // 这里改用骨骼世界坐标计算真实包围盒
+    // 精确绑定科目三肢体骨骼与头部、下巴骨骼
+    BONE_KEYS.forEach(b => {
+      const found = model.getObjectByName(b.name);
+      if (found) danceBones[b.key] = found;
+    });
+    headBone = danceBones.head || model.getObjectByName('c_head_00_uJnt_038');
+    jawBone = model.getObjectByName('c_jaw_00_uJnt_061');
+    console.log('[Tom] 骨骼识别数量:', Object.keys(danceBones).length, 'Head:', !!headBone, 'Jaw:', !!jawBone);
+
+    // 自动居中与缩放：基于骨骼世界坐标计算真实包围盒
     model.updateMatrixWorld(true);
     let box = new THREE.Box3();
     let hasBones = false;
@@ -501,20 +539,33 @@ loader.load(
       }
     });
     if (!hasBones || !isFinite(box.min.x) || !isFinite(box.max.y)) {
-      box.setFromObject(model); // 兜底：无骨骼信息时退回常规方式
+      box.setFromObject(model);
     }
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     console.log('[Tom] 真实模型尺寸:', size.x.toFixed(1), size.y.toFixed(1), size.z.toFixed(1));
     const scale = 2.0 / Math.max(size.x, size.y, size.z, 0.001);
     model.scale.setScalar(scale);
-    model.position.x -= center.x * scale;
-    model.position.z -= center.z * scale;
-    model.position.y -= box.min.y * scale;
-    scene.add(model);
-    tomModel = model; window.tomModel = model;
-    baseModelPos.copy(model.position);
-    baseModelRot.copy(model.rotation);
+
+    // 居中于 tomGroup 原点
+    model.position.x = -center.x * scale;
+    model.position.z = -center.z * scale;
+    model.position.y = -box.min.y * scale;
+
+    tomGroup.add(model);
+    tomModel = model; window.tomModel = model; window.tomGroup = tomGroup;
+
+    // 全身透明命中胶囊柱 (hitProxy)，确保点击汤姆猫任何区域 100% 灵敏响应
+    const hitProxy = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.48, 2.0, 16),
+      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+    );
+    hitProxy.position.set(0, 1.0, 0);
+    tomGroup.add(hitProxy);
+    tomMeshes.push(hitProxy);
+
+    baseModelPos.copy(tomGroup.position);
+    baseModelRot.copy(tomGroup.rotation);
     if (headBone) baseHeadRot.copy(headBone.rotation);
     if (jawBone) baseJawRot.copy(jawBone.rotation);
     BONE_KEYS.forEach(b => {
@@ -1405,7 +1456,7 @@ function doTalk() {
   }
 }
 
-/* ---------- 跳舞与连击倒下系统 ---------- */
+/* ---------- 跳舞与连击倒下系统（GSAP 驱动丝滑科目三与拟真跌倒） ---------- */
 function spawnDanceFx() {
   const emojis = ['🎵', '🎶', '✨', '💃', '⭐', '🎉', '💫', '🔥'];
   const el = document.createElement('span');
@@ -1422,7 +1473,6 @@ function spawnDanceFx() {
 
 function doDance() {
   if (isKnockedDown) return;
-  // 如果已经在跳舞，再次点击可立即停止
   if (isDancing) {
     stopDance();
     return;
@@ -1431,17 +1481,17 @@ function doDance() {
 }
 
 function startDance() {
+  if (isDancing) return;
   isDancing = true;
   isBusyWithAction = true;
   clearTimeout(idleTimer);
-  danceStartTime = performance.now();
 
   audioCtx();
 
   const danceBtn = document.getElementById('btn-dance');
   if (danceBtn) danceBtn.textContent = '⏸️ 停止科目三';
 
-  // 待机轻微呼吸动作作为底色，由程序骨骼驱动手、脚、头跳科目三
+  // 待机轻微呼吸动作作为底色
   const breathIdx = findAnimByPattern(/breathing|idle/i);
   if (breathIdx !== null && mixer && animations[breathIdx]) {
     const next = mixer.clipAction(animations[breathIdx]);
@@ -1453,56 +1503,158 @@ function startDance() {
     currentAction = next;
   }
 
-  showBubble('💃 科目三走起～ 丝滑小连招！🎵✨', 4500);
+  showBubble('💃 科目三走起～ 丝滑小连招！🎵✨', 5500);
 
+  // 播放魔性电音节拍与粒子
   let beatStep = 0;
   clearInterval(danceAudioInterval);
   danceAudioInterval = setInterval(() => {
     if (!isDancing) return;
     sfxDanceBeat(beatStep++);
     spawnDanceFx();
-  }, 220);
+  }, 225);
 
-  // 5.2秒后自动丝滑收尾
+  // 构建 GSAP 丝滑科目三舞步时间线（4拍循环，只动脚踝滑步、胸前翻手花、歪头卡点，躯干稳如泰山）
+  if (danceTimeline) danceTimeline.kill();
+  danceTimeline = gsap.timeline({ repeat: -1 });
+  window.danceTimeline = danceTimeline;
+
+  // 0. 抬手至胸前准备姿势 (0.2s)
+  danceTimeline.to(danceState, {
+    armRaise: 0.68,
+    duration: 0.2,
+    ease: "power2.out"
+  });
+
+  // 第一拍 (0.45s)：左脚外撇八字滑步 + 胸前翻手花 + 头向左歪卡点点头
+  danceTimeline.to(danceState, {
+    lFootZ: 0.45,
+    lFootY: 0.28,
+    rFootZ: 0,
+    rFootY: 0,
+    lThighX: 0.2,
+    rThighX: 0,
+    lArmZ: -0.28,
+    rArmZ: -0.28,
+    lWristRotX: "+=" + (Math.PI * 2),
+    rWristRotX: "-=" + (Math.PI * 2),
+    headTilt: -0.22,
+    headNod: 0.16,
+    jawOpen: 0.14,
+    duration: 0.45,
+    ease: "power2.inOut"
+  });
+
+  // 第二拍 (0.45s)：左脚内八回扣滑步 + 手臂回弹翻手花 + 头部回中
+  danceTimeline.to(danceState, {
+    lFootZ: -0.32,
+    lFootY: -0.18,
+    lThighX: 0.05,
+    lArmZ: 0,
+    rArmZ: 0,
+    lWristRotX: "+=" + (Math.PI * 2),
+    rWristRotX: "-=" + (Math.PI * 2),
+    headTilt: 0,
+    headNod: 0,
+    jawOpen: 0,
+    duration: 0.45,
+    ease: "power2.inOut"
+  });
+
+  // 第三拍 (0.45s)：右脚外撇八字滑步 + 胸前翻手花 + 头向右歪卡点点头
+  danceTimeline.to(danceState, {
+    rFootZ: -0.45,
+    rFootY: -0.28,
+    lFootZ: 0,
+    lFootY: 0,
+    rThighX: 0.2,
+    lThighX: 0,
+    lArmZ: 0.28,
+    rArmZ: 0.28,
+    lWristRotX: "+=" + (Math.PI * 2),
+    rWristRotX: "-=" + (Math.PI * 2),
+    headTilt: 0.22,
+    headNod: 0.16,
+    jawOpen: 0.14,
+    duration: 0.45,
+    ease: "power2.inOut"
+  });
+
+  // 第四拍 (0.45s)：右脚内八回扣滑步 + 手臂回弹翻手花 + 头部回中
+  danceTimeline.to(danceState, {
+    rFootZ: 0.32,
+    rFootY: 0.18,
+    rThighX: 0.05,
+    lArmZ: 0,
+    rArmZ: 0,
+    lWristRotX: "+=" + (Math.PI * 2),
+    rWristRotX: "-=" + (Math.PI * 2),
+    headTilt: 0,
+    headNod: 0,
+    jawOpen: 0,
+    duration: 0.45,
+    ease: "power2.inOut"
+  });
+
+  // 约 7.6 秒后自动收尾，也可随时再次点击提前停止
   clearTimeout(danceTimer);
   danceTimer = setTimeout(() => {
     stopDance();
-  }, 5200);
+  }, 7600);
 }
 
 function stopDance() {
   if (!isDancing) return;
-  isDancing = false;
   clearTimeout(danceTimer);
   clearInterval(danceAudioInterval);
 
   const danceBtn = document.getElementById('btn-dance');
   if (danceBtn) danceBtn.textContent = '💃 科目三';
-
   if (wallGlow) wallGlow.color.setHex(0xffb066);
 
-  // 身体与所有跳舞骨骼（脚、手、头）绝对复原归位
-  if (tomModel) {
-    tomModel.position.copy(baseModelPos);
-    tomModel.rotation.copy(baseModelRot);
-  }
+  if (danceTimeline) danceTimeline.kill();
+
+  // GSAP 丝滑归位
+  gsap.to(danceState, {
+    armRaise: 0,
+    lArmZ: 0,
+    rArmZ: 0,
+    lFootZ: 0,
+    lFootY: 0,
+    rFootZ: 0,
+    rFootY: 0,
+    lThighX: 0,
+    rThighX: 0,
+    headTilt: 0,
+    headNod: 0,
+    jawOpen: 0,
+    duration: 0.35,
+    ease: "power2.out",
+    onComplete: () => {
+      isDancing = false;
+      resetDanceBones();
+      sfxTomMeow(1);
+      showBubble('呼～这套科目三丝滑吧？喵哈哈～😸', 2200);
+      setTimeout(() => {
+        if (!isKnockedDown && !isDancing) {
+          isBusyWithAction = false;
+          playNextRandomIdle();
+          scheduleNextIdleSwitch();
+        }
+      }, 800);
+    }
+  });
+}
+
+function resetDanceBones() {
+  tomGroup.position.copy(baseModelPos);
+  tomGroup.rotation.copy(baseModelRot);
   BONE_KEYS.forEach(b => {
     if (danceBones[b.key] && baseDanceRots[b.key]) {
       danceBones[b.key].rotation.copy(baseDanceRots[b.key]);
     }
   });
   if (jawBone && baseJawRot) jawBone.rotation.copy(baseJawRot);
-
-  sfxTomMeow(1);
-  showBubble('呼～这套科目三丝滑吧？喵哈哈～😸', 2200);
-
-  setTimeout(() => {
-    if (!isKnockedDown && !isDancing) {
-      isBusyWithAction = false;
-      playNextRandomIdle();
-      scheduleNextIdleSwitch();
-    }
-  }, 1200);
 }
 
 function spawnDizzyStars() {
@@ -1526,71 +1678,90 @@ function clearDizzyStars() {
   dizzyElements = [];
 }
 
-let kdTimers = [];
-function clearKdTimers() {
-  kdTimers.forEach(t => clearTimeout(t));
-  kdTimers = [];
-}
-
 function triggerKnockdown() {
   if (isKnockedDown) return;
   isKnockedDown = true;
   isBusyWithAction = true;
   if (isDancing) stopDance();
   clearTimeout(idleTimer);
-  clearKdTimers();
   if (window.speechSynthesis) window.speechSynthesis.cancel();
 
-  // 阶段 1：适度眩晕晃摆 (0.4秒)
-  knockdownPhase = 'dizzy';
-  knockdownTimer = performance.now();
+  if (kdTimeline) kdTimeline.kill();
+
   spawnDizzyStars();
   sfxDizzy();
-  showBubble('哎呀呀～眼冒金星了！😵💫', 1400);
+  showBubble('哎呀呀～眼冒金星了！😵💫', 1300);
 
-  // 阶段 2：向后摔倒 (0.35秒)
-  kdTimers.push(setTimeout(() => {
-    knockdownPhase = 'falling';
-    knockdownTimer = performance.now();
-    sfxBodySlam();
-    const app = document.getElementById('app');
-    app.classList.remove('shake-hard');
-    void app.offsetWidth;
-    app.classList.add('shake-hard');
-    setTimeout(() => app.classList.remove('shake-hard'), 600);
+  kdTimeline = gsap.timeline({
+    onComplete: () => {
+      clearDizzyStars();
+      isKnockedDown = false;
+      isBusyWithAction = false;
+      tomGroup.position.copy(baseModelPos);
+      tomGroup.rotation.copy(baseModelRot);
+      if (headBone && baseHeadRot) headBone.rotation.copy(baseHeadRot);
+      showBubble('好汉不吃眼前亏，别再打啦喵！😼', 2200);
+      sfxTomMeow(0);
+      playNextRandomIdle();
+      scheduleNextIdleSwitch();
+    }
+  });
+  window.kdTimeline = kdTimeline;
 
-    // 阶段 3：倒地不起 (1.8秒)
-    kdTimers.push(setTimeout(() => {
-      knockdownPhase = 'flat';
+  // 阶段 1：眼冒金星，左右眩晕摇晃 (0.45s)
+  kdTimeline.to(kdState, {
+    rotZ: 0.16,
+    headShakeY: 0.28,
+    duration: 0.11,
+    ease: "power1.inOut",
+    yoyo: true,
+    repeat: 3
+  });
+
+  // 阶段 2：重力加速度向后结实倒地 (0.38s)
+  kdTimeline.to(kdState, {
+    rotX: -Math.PI * 0.48, // 身体平躺
+    rotZ: 0,
+    posY: 0.15,            // 贴近地面防穿模
+    posZ: -0.22,
+    headShakeY: 0,
+    duration: 0.38,
+    ease: "power2.in",
+    onStart: () => {
+      sfxBodySlam();
+      const app = document.getElementById('app');
+      app.classList.remove('shake-hard');
+      void app.offsetWidth;
+      app.classList.add('shake-hard');
+      setTimeout(() => app.classList.remove('shake-hard'), 600);
+    }
+  });
+
+  // 阶段 3：倒地不起，滑稽轻微抽搐与鸟叫 (1.8s)
+  kdTimeline.to(kdState, {
+    posY: 0.17,
+    duration: 0.28,
+    repeat: 3,
+    yoyo: true,
+    ease: "sine.inOut",
+    onStart: () => {
       showBubble('呜呜…起不来了…😵💫', 1800);
       sfxBirdChirp();
+    }
+  });
 
-      // 阶段 4：爬起来恢复 (0.65秒)
-      kdTimers.push(setTimeout(() => {
-        clearDizzyStars();
-        knockdownPhase = 'getting_up';
-        knockdownTimer = performance.now();
+  // 倒地稍作停顿 (0.4s)
+  kdTimeline.to({}, { duration: 0.4 });
 
-        kdTimers.push(setTimeout(() => {
-          // 彻底恢复归位
-          knockdownPhase = 'none';
-          isKnockedDown = false;
-          if (tomModel) {
-            tomModel.position.copy(baseModelPos);
-            tomModel.rotation.copy(baseModelRot);
-          }
-          if (headBone) headBone.rotation.copy(baseHeadRot);
-          if (jawBone) jawBone.rotation.copy(baseJawRot);
-
-          showBubble('好汉不吃眼前亏，别再打啦喵！😼', 2000);
-          sfxTomMeow(0);
-          isBusyWithAction = false;
-          playNextRandomIdle();
-          scheduleNextIdleSwitch();
-        }, 650));
-      }, 1800));
-    }, 350));
-  }, 400));
+  // 阶段 4：挣扎爬起站立复原 (0.65s)
+  kdTimeline.to(kdState, {
+    rotX: 0,
+    rotZ: 0,
+    posY: 0,
+    posZ: 0,
+    duration: 0.65,
+    ease: "back.out(1.2)"
+  });
 }
 
 function doMilk() {
@@ -1661,17 +1832,28 @@ function doPrank() {
   }, 2600);
 }
 
-/* ---------- 点击猫咪：被打与连击倒下效果 ---------- */
+/* ---------- 点击猫咪：被打与连击倒下效果 (包含 hitProxy 全身灵敏点击) ---------- */
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 let clickCooldown = 0;
 let downPos = null;
-renderer.domElement.addEventListener('pointerdown', (e) => { downPos = { x: e.clientX, y: e.clientY }; });
+let pointerDownTime = 0;
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  downPos = { x: e.clientX, y: e.clientY };
+  pointerDownTime = performance.now();
+});
+
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (!downPos) return;
-  const moved = Math.abs(e.clientX - downPos.x) + Math.abs(e.clientY - downPos.y);
+  const dx = e.clientX - downPos.x;
+  const dy = e.clientY - downPos.y;
+  const moved = Math.sqrt(dx * dx + dy * dy);
+  const clickDur = performance.now() - pointerDownTime;
   downPos = null;
-  if (moved > 6) return;
+
+  // 18px 容差防手抖，700ms 过滤拖拽旋转
+  if (moved > 18 || clickDur > 700) return;
 
   pointer.x = (e.clientX / innerWidth) * 2 - 1;
   pointer.y = -(e.clientY / innerHeight) * 2 + 1;
@@ -1679,19 +1861,19 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   const hits = raycaster.intersectObjects(tomMeshes, false);
 
   if (hits.length && performance.now() > clickCooldown) {
-    clickCooldown = performance.now() + 140; // 冷却缩短至140ms
+    clickCooldown = performance.now() + 100;
     const now = performance.now();
 
-    // 如果当前正处于倒地状态，点击触发哀鸣呻吟
+    // 倒地时被戳：呻吟叫疼
     if (isKnockedDown) {
       sfxGroan();
       spawnHitFx(e.clientX, e.clientY);
-      showBubble('别戳啦…疼死喵了…🤕', 1000);
+      showBubble('别戳啦…疼死喵了…🤕', 900);
       return;
     }
 
-    // 连击检测：2.0 秒内连续打 3 次触发击倒
-    if (now - lastHitTime < 2000) {
+    // 2.2 秒内连续点击 3 次触发击倒摔跤
+    if (now - lastHitTime < 2200) {
       comboHits++;
     } else {
       comboHits = 1;
@@ -1701,6 +1883,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     if (comboHits >= 3) {
       comboHits = 0;
       spawnHitFx(e.clientX, e.clientY);
+      showBubble('嗷呜——！彻底晕倒了喵！(3/3) 💫', 1200);
       triggerKnockdown();
     } else {
       sfxHit();
@@ -1715,13 +1898,15 @@ renderer.domElement.addEventListener('pointerup', (e) => {
           isBusyWithAction = false;
           scheduleNextIdleSwitch();
         }
-      }, 1200);
+      }, 1000);
     }
   }
 });
 
 window.doDance = doDance;
 window.triggerKnockdown = triggerKnockdown;
+window.getIsDancing = () => isDancing;
+window.getIsKnockedDown = () => isKnockedDown;
 
 /* ---------- 渲染循环 ---------- */
 const clock = new THREE.Clock();
@@ -1732,30 +1917,24 @@ function animate() {
 
   const t = clock.getElapsedTime();
 
-  // 1. 科目三跳舞：身体直立稳如泰山，只让【脚、手、头】丝滑律动！
-  if (isDancing && tomModel) {
-    const dtDance = (performance.now() - danceStartTime) * 0.001;
-    const beat = dtDance * 13.6;       // 130 BPM 节奏主频
-    const halfBeat = dtDance * 6.8;    // 左右交替滑步频
+  // 1. 科目三跳舞：四肢与头丝滑卡点律动，身体躯干绝对稳立
+  if (isDancing) {
+    tomGroup.position.copy(baseModelPos);
+    tomGroup.rotation.copy(baseModelRot);
 
-    // 身体躯干稳立重心，绝不倾斜摇摆！
-    tomModel.position.copy(baseModelPos);
-    tomModel.rotation.copy(baseModelRot);
-
-    // 【头】：科目三卡点节拍点头与歪头 (Head nod & tilt)
+    // 【头】：卡点点头与歪头
     if (danceBones.head && baseDanceRots.head) {
-      danceBones.head.rotation.z = baseDanceRots.head.z + Math.sin(halfBeat) * 0.22;
-      danceBones.head.rotation.x = baseDanceRots.head.x + Math.max(0, Math.sin(beat)) * 0.16;
+      danceBones.head.rotation.z = baseDanceRots.head.z + danceState.headTilt;
+      danceBones.head.rotation.x = baseDanceRots.head.x + danceState.headNod;
     }
-
-    // 【手】：科目三经典胸前翻手花与手臂交替内收摆动 (Wrist rolling flowers & arm wave)
+    // 【手】：胸前经典翻手花与手臂交替侧摆
     if (danceBones.lArm && baseDanceRots.lArm) {
-      danceBones.lArm.rotation.x = baseDanceRots.lArm.x + 0.65;
-      danceBones.lArm.rotation.z = baseDanceRots.lArm.z + Math.sin(halfBeat) * 0.35;
+      danceBones.lArm.rotation.x = baseDanceRots.lArm.x + danceState.armRaise;
+      danceBones.lArm.rotation.z = baseDanceRots.lArm.z + danceState.lArmZ;
     }
     if (danceBones.rArm && baseDanceRots.rArm) {
-      danceBones.rArm.rotation.x = baseDanceRots.rArm.x + 0.65;
-      danceBones.rArm.rotation.z = baseDanceRots.rArm.z + Math.sin(halfBeat) * 0.35;
+      danceBones.rArm.rotation.x = baseDanceRots.rArm.x + danceState.armRaise;
+      danceBones.rArm.rotation.z = baseDanceRots.rArm.z + danceState.rArmZ;
     }
     if (danceBones.lElbow && baseDanceRots.lElbow) {
       danceBones.lElbow.rotation.z = baseDanceRots.lElbow.z - 0.45;
@@ -1763,77 +1942,56 @@ function animate() {
     if (danceBones.rElbow && baseDanceRots.rElbow) {
       danceBones.rElbow.rotation.z = baseDanceRots.rElbow.z + 0.45;
     }
-    // 关键精髓：手腕360°旋转翻手花！
     if (danceBones.lWrist && baseDanceRots.lWrist) {
-      danceBones.lWrist.rotation.x = baseDanceRots.lWrist.x + Math.sin(beat) * 0.55;
-      danceBones.lWrist.rotation.y = baseDanceRots.lWrist.y + Math.cos(beat) * 0.55;
+      danceBones.lWrist.rotation.x = baseDanceRots.lWrist.x + Math.sin(danceState.lWristRotX) * 0.65;
+      danceBones.lWrist.rotation.y = baseDanceRots.lWrist.y + Math.cos(danceState.lWristRotX) * 0.65;
     }
     if (danceBones.rWrist && baseDanceRots.rWrist) {
-      danceBones.rWrist.rotation.x = baseDanceRots.rWrist.x + Math.sin(beat + Math.PI) * 0.55;
-      danceBones.rWrist.rotation.y = baseDanceRots.rWrist.y + Math.cos(beat + Math.PI) * 0.55;
+      danceBones.rWrist.rotation.x = baseDanceRots.rWrist.x + Math.sin(danceState.rWristRotX) * 0.65;
+      danceBones.rWrist.rotation.y = baseDanceRots.rWrist.y + Math.cos(danceState.rWristRotX) * 0.65;
     }
 
-    // 【脚】：科目三经典丝滑滑步与双脚踝交替内撇外撇 (Foot twist & ankle outward/inward)
+    // 【脚】：经典丝滑滑步与双脚踝交替内撇外撇
     if (danceBones.lFoot && baseDanceRots.lFoot) {
-      danceBones.lFoot.rotation.z = baseDanceRots.lFoot.z + Math.sin(halfBeat) * 0.42;
-      danceBones.lFoot.rotation.y = baseDanceRots.lFoot.y + Math.cos(halfBeat) * 0.28;
+      danceBones.lFoot.rotation.z = baseDanceRots.lFoot.z + danceState.lFootZ;
+      danceBones.lFoot.rotation.y = baseDanceRots.lFoot.y + danceState.lFootY;
     }
     if (danceBones.rFoot && baseDanceRots.rFoot) {
-      danceBones.rFoot.rotation.z = baseDanceRots.rFoot.z + Math.sin(halfBeat + Math.PI) * 0.42;
-      danceBones.rFoot.rotation.y = baseDanceRots.rFoot.y + Math.cos(halfBeat + Math.PI) * 0.28;
+      danceBones.rFoot.rotation.z = baseDanceRots.rFoot.z + danceState.rFootZ;
+      danceBones.rFoot.rotation.y = baseDanceRots.rFoot.y + danceState.rFootY;
     }
     if (danceBones.lThigh && baseDanceRots.lThigh) {
-      danceBones.lThigh.rotation.x = baseDanceRots.lThigh.x + Math.max(0, Math.sin(beat)) * 0.12;
+      danceBones.lThigh.rotation.x = baseDanceRots.lThigh.x + danceState.lThighX;
     }
     if (danceBones.rThigh && baseDanceRots.rThigh) {
-      danceBones.rThigh.rotation.x = baseDanceRots.rThigh.x + Math.max(0, Math.sin(beat + Math.PI)) * 0.12;
+      danceBones.rThigh.rotation.x = baseDanceRots.rThigh.x + danceState.rThighX;
     }
 
     // 嘴巴跟随节拍合唱
     if (jawBone && baseJawRot) {
-      jawBone.rotation.x = baseJawRot.x + Math.max(0, Math.sin(beat)) * 0.14;
+      jawBone.rotation.x = baseJawRot.x + danceState.jawOpen;
     }
-    if (wallGlow) wallGlow.color.setHSL((dtDance * 0.55) % 1, 0.95, 0.6);
+    if (wallGlow) {
+      const beatHue = (performance.now() * 0.0006) % 1;
+      wallGlow.color.setHSL(beatHue, 0.95, 0.6);
+    }
   }
-  // 2. 连续打击倒下动画：眩晕晃动 -> 摔倒倒地 -> 躺平抽搐 -> 爬起恢复
-  else if (isKnockedDown && tomModel) {
-    if (knockdownPhase === 'dizzy') {
-      const elapsed = (performance.now() - knockdownTimer) * 0.001;
-      tomModel.rotation.z = baseModelRot.z + Math.sin(elapsed * 14) * 0.18;
-      tomModel.rotation.x = baseModelRot.x;
-      if (headBone) headBone.rotation.y = baseHeadRot.y + Math.sin(elapsed * 16) * 0.22;
-    } else if (knockdownPhase === 'falling') {
-      const p = Math.min(1, (performance.now() - knockdownTimer) / 350);
-      const ease = p * p;
-      tomModel.rotation.z = baseModelRot.z;
-      tomModel.rotation.x = baseModelRot.x - (Math.PI / 2) * ease;
-      tomModel.position.y = THREE.MathUtils.lerp(baseModelPos.y, baseModelPos.y + 0.15, ease);
-      tomModel.position.z = THREE.MathUtils.lerp(baseModelPos.z, baseModelPos.z - 0.25, ease);
-      if (headBone) headBone.rotation.copy(baseHeadRot);
-    } else if (knockdownPhase === 'flat') {
-      tomModel.rotation.z = baseModelRot.z;
-      tomModel.rotation.x = baseModelRot.x - Math.PI / 2;
-      tomModel.position.y = baseModelPos.y + 0.15 + Math.sin(t * 2.5) * 0.012;
-      tomModel.position.z = baseModelPos.z - 0.25;
-      if (headBone) headBone.rotation.copy(baseHeadRot);
-    } else if (knockdownPhase === 'getting_up') {
-      const p = Math.min(1, (performance.now() - knockdownTimer) / 650);
-      const ease = 0.5 - Math.cos(p * Math.PI) / 2;
-      tomModel.rotation.z = baseModelRot.z;
-      tomModel.rotation.x = THREE.MathUtils.lerp(baseModelRot.x - Math.PI / 2, baseModelRot.x, ease);
-      tomModel.position.y = THREE.MathUtils.lerp(baseModelPos.y + 0.15, baseModelPos.y, ease);
-      tomModel.position.z = THREE.MathUtils.lerp(baseModelPos.z - 0.25, baseModelPos.z, ease);
-      if (headBone) headBone.rotation.copy(baseHeadRot);
+  // 2. 连续打击倒下动画：GSAP 驱动 tomGroup 摔倒平躺与爬起复原
+  else if (isKnockedDown) {
+    tomGroup.position.set(baseModelPos.x, baseModelPos.y + kdState.posY, baseModelPos.z + kdState.posZ);
+    tomGroup.rotation.set(baseModelRot.x + kdState.rotX, baseModelRot.y, baseModelRot.z + kdState.rotZ);
+    if (headBone && baseHeadRot) {
+      headBone.rotation.y = baseHeadRot.y + kdState.headShakeY;
     }
   }
   // 3. 常态：绝对归位，杜绝任何持续晃动！
-  else if (tomModel) {
-    tomModel.position.copy(baseModelPos);
-    tomModel.rotation.copy(baseModelRot);
-    if (headBone) headBone.rotation.copy(baseHeadRot);
-    if (isTomSpeaking && jawBone) {
+  else {
+    tomGroup.position.copy(baseModelPos);
+    tomGroup.rotation.copy(baseModelRot);
+    if (headBone && baseHeadRot) headBone.rotation.copy(baseHeadRot);
+    if (isTomSpeaking && jawBone && baseJawRot) {
       jawBone.rotation.x = baseJawRot.x + Math.max(0, Math.sin(t * 16)) * 0.12;
-    } else if (jawBone) {
+    } else if (jawBone && baseJawRot) {
       jawBone.rotation.copy(baseJawRot);
     }
   }
