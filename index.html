@@ -103,6 +103,36 @@
   }
   #sound-toggle:hover { background: rgba(255,255,255,.18); transform: scale(1.08); }
   #sound-toggle.muted { opacity: .55; }
+
+  /* 麦克风录音学舌按钮特别样式 */
+  #btn-mic {
+    background: linear-gradient(135deg, #ff5252, #ff7043) !important;
+    border: 1px solid rgba(255,255,255,.35) !important;
+    color: #fff !important;
+    font-weight: 600;
+    box-shadow: 0 0 14px rgba(255,82,82,.45);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  #btn-mic:hover { transform: translateY(-2px) scale(1.03); box-shadow: 0 0 20px rgba(255,82,82,.65); }
+  #btn-mic.recording {
+    background: linear-gradient(135deg, #e53935, #c2185b) !important;
+    box-shadow: 0 0 24px rgba(229,57,53,.9);
+    animation: mic-pulse .8s infinite alternate;
+  }
+  #btn-mic.mimicking {
+    background: linear-gradient(135deg, #00c853, #00b0ff) !important;
+    box-shadow: 0 0 20px rgba(0,200,83,.8);
+    animation: mic-pulse .6s infinite alternate;
+  }
+  @keyframes mic-pulse {
+    0% { transform: scale(1); filter: brightness(1); }
+    100% { transform: scale(1.07); filter: brightness(1.22); }
+  }
 </style>
 </head>
 <body>
@@ -111,7 +141,7 @@
     <h1>🐱 会说话的汤姆猫</h1>
     <p>Three.js · GLB 模型 · 骨骼动画</p>
   </div>
-  <div id="hint">🖱️ 拖拽旋转 · 点击猫咪打它一下 · 底部按钮互动</div>
+  <div id="hint">🖱️ 拖拽旋转 · 点击猫咪打它一下 · 按住或点击【🎙️ 对汤姆猫说话】学舌</div>
   <button id="sound-toggle" title="音效开关" aria-label="音效开关">🔊</button>
   <div id="bubble"></div>
   <div id="panel"></div>
@@ -371,6 +401,9 @@ let mixer = null;
 let currentAction = null;
 let animations = [];
 let tomMeshes = [];
+let jawBone = null;
+let isTomSpeaking = false;
+let talkTimer = null;
 
 loader.load(
   MODEL_URL,
@@ -473,6 +506,7 @@ function buildPanel() {
   });
 
   // 互动按钮
+  setupMicButton(panel);
   addExtraBtn(panel, '说话 💬', doTalk);
   addExtraBtn(panel, '喝牛奶 🥛', doMilk);
   addExtraBtn(panel, '放屁 💨', doFart);
@@ -488,7 +522,7 @@ function addExtraBtn(panel, label, fn) {
   panel.appendChild(btn);
 }
 
-/* ---------- 音效（Web Audio 实时合成，无需音频文件） ---------- */
+/* ---------- 音效与语音系统（高调卡通猫音 + 麦克风变声学舌） ---------- */
 let actx = null;
 let sfxBus = null;        // 干声总线
 let wetBus = null;        // 混响发送
@@ -574,41 +608,73 @@ soundToggle.addEventListener('click', () => {
   if (masterGain && actx) masterGain.gain.setTargetAtTime(soundOn ? 0.75 : 0, actx.currentTime, 0.02);
 });
 
-// 说话：用两个共振峰模拟元音，叠低频厚度与气声，比单纯锯齿波更像"喵语"
-function sfxTalk(dur = 1.4) {
+// 汤姆猫卡通猫叫合成（高频俏皮调频，模拟 "喵呜～" 与 "咪喵！"）
+function sfxTomMeow(kind = 0) {
   const ctx = audioCtx();
   const t0 = ctx.currentTime + 0.01;
-  const vowels = [[520, 1180], [400, 900], [700, 1500], [330, 1050]];
-  let t = t0;
-  while (t < t0 + dur) {
-    const len = 0.09 + Math.random() * 0.13;
-    const v = vowels[Math.floor(Math.random() * vowels.length)];
-    const base = 170 + Math.random() * 130;
 
+  if (kind === 0) {
+    // 经典 "喵呜～" (高音上扬再柔和下滑，基频 620~1020Hz)
+    const dur = 0.52;
     const osc = ctx.createOscillator();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(base * (0.92 + Math.random() * 0.2), t);
-    osc.frequency.linearRampToValueAtTime(base * (0.72 + Math.random() * 0.55), t + len);
-    const sub = ctx.createOscillator();
-    sub.type = 'triangle';
-    sub.frequency.setValueAtTime(base / 2, t);
-    sub.frequency.linearRampToValueAtTime(base / 2.4, t + len);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(620, t0);
+    osc.frequency.exponentialRampToValueAtTime(1020, t0 + 0.14);
+    osc.frequency.exponentialRampToValueAtTime(740, t0 + dur);
 
-    const f1 = ctx.createBiquadFilter(); f1.type = 'bandpass'; f1.frequency.value = v[0]; f1.Q.value = 5;
-    const f2 = ctx.createBiquadFilter(); f2.type = 'bandpass'; f2.frequency.value = v[1]; f2.Q.value = 7;
-    const g1 = ctx.createGain(); g1.gain.value = 0.9;
+    // FM 调制波增加喉咙震颤
+    const mod = ctx.createOscillator();
+    mod.type = 'triangle';
+    mod.frequency.setValueAtTime(130, t0);
+    mod.frequency.linearRampToValueAtTime(90, t0 + dur);
+    const mg = ctx.createGain();
+    mg.gain.setValueAtTime(55, t0);
+    mg.gain.linearRampToValueAtTime(15, t0 + dur);
+    mod.connect(mg).connect(osc.frequency);
+
+    const f1 = ctx.createBiquadFilter(); f1.type = 'bandpass'; f1.frequency.value = 1150; f1.Q.value = 4.2;
+    const f2 = ctx.createBiquadFilter(); f2.type = 'bandpass'; f2.frequency.value = 2700; f2.Q.value = 5.0;
+    const g1 = ctx.createGain(); g1.gain.value = 0.85;
     const g2 = ctx.createGain(); g2.gain.value = 0.45;
     const g = ctx.createGain();
-    ampEnv(g, t, 0.32, 0.02, len);
+    ampEnv(g, t0, 0.48, 0.035, dur);
 
     osc.connect(f1).connect(g1).connect(g);
     osc.connect(f2).connect(g2).connect(g);
-    sub.connect(g);
     g.connect(sfxBus);
-    osc.start(t); osc.stop(t + len + 0.02);
-    sub.start(t); sub.stop(t + len + 0.02);
-    if (Math.random() < 0.5) noiseLayer(ctx, t, len * 0.7, { freq: 1600, q: 0.7, peak: 0.03 });
-    t += len + 0.02 + Math.random() * 0.05;
+
+    osc.start(t0); osc.stop(t0 + dur + 0.02);
+    mod.start(t0); mod.stop(t0 + dur + 0.02);
+    noiseLayer(ctx, t0 + 0.02, 0.15, { freq: 2400, q: 1.2, peak: 0.04 });
+  } else {
+    // 活泼俏皮的连续两声 "咪喵！"
+    const notes = [
+      { f0: 780, f1: 1080, dur: 0.18, wait: 0 },
+      { f0: 640, f1: 1180, dur: 0.32, wait: 0.22 }
+    ];
+    notes.forEach(n => {
+      const t = t0 + n.wait;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(n.f0, t);
+      osc.frequency.exponentialRampToValueAtTime(n.f1, t + n.dur * 0.6);
+      osc.frequency.exponentialRampToValueAtTime(n.f0 * 1.05, t + n.dur);
+
+      const mod = ctx.createOscillator();
+      mod.type = 'sawtooth';
+      mod.frequency.setValueAtTime(160, t);
+      const mg = ctx.createGain();
+      mg.gain.value = 40;
+      mod.connect(mg).connect(osc.frequency);
+
+      const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1800; f.Q.value = 3.5;
+      const g = ctx.createGain();
+      ampEnv(g, t, 0.42, 0.02, n.dur);
+
+      osc.connect(f).connect(g).connect(sfxBus);
+      osc.start(t); osc.stop(t + n.dur + 0.02);
+      mod.start(t); mod.stop(t + n.dur + 0.02);
+    });
   }
 }
 
@@ -620,18 +686,18 @@ function sfxMilk() {
     const t = t0 + i * 0.28;
     const osc = ctx.createOscillator();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(310 - i * 22, t);
+    osc.frequency.setValueAtTime(320 - i * 22, t);
     osc.frequency.exponentialRampToValueAtTime(85, t + 0.14);
     const g = ctx.createGain();
     ampEnv(g, t, 0.42, 0.015, 0.17);
     osc.connect(g).connect(sfxBus);
     osc.start(t); osc.stop(t + 0.2);
-    noiseLayer(ctx, t + 0.01, 0.09, { freq: 420 + i * 60, q: 3, peak: 0.05 });
+    noiseLayer(ctx, t + 0.01, 0.09, { freq: 480 + i * 60, q: 3, peak: 0.05 });
   }
   const t1 = t0 + 1.25;
   const o2 = ctx.createOscillator();
   o2.type = 'triangle';
-  o2.frequency.setValueAtTime(340, t1);
+  o2.frequency.setValueAtTime(360, t1);
   o2.frequency.exponentialRampToValueAtTime(190, t1 + 0.5);
   const f2 = ctx.createBiquadFilter();
   f2.type = 'lowpass'; f2.frequency.value = 1100;
@@ -694,33 +760,287 @@ function sfxBoing() {
   lfo.start(t0); lfo.stop(t0 + 0.65);
 }
 
-// 被打：低频重击 + 拍击噪声 + 先上滑后下滑的"哎哟"
+// 被打：清脆击打 + 标志性高亢滑稽惨叫 "嗷呜——！"
 function sfxHit() {
   const ctx = audioCtx();
   const t0 = ctx.currentTime + 0.01;
+
+  // 1. 重击拍打声
+  const punch = ctx.createOscillator();
+  punch.type = 'sine';
+  punch.frequency.setValueAtTime(220, t0);
+  punch.frequency.exponentialRampToValueAtTime(38, t0 + 0.12);
+  const punchG = ctx.createGain();
+  ampEnv(punchG, t0, 0.65, 0.003, 0.15);
+  punch.connect(punchG).connect(sfxBus);
+  punch.start(t0); punch.stop(t0 + 0.18);
+  noiseLayer(ctx, t0, 0.1, { type: 'bandpass', freq: 1400, q: 1.5, peak: 0.32 });
+
+  // 2. 汤姆猫高亢尖叫：720Hz 骤冲 1420Hz 然后急坠至 380Hz，伴随 22Hz 滑稽破音颤抖
+  const tVoice = t0 + 0.06;
+  const screamDur = 0.46;
   const osc = ctx.createOscillator();
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(190, t0);
-  osc.frequency.exponentialRampToValueAtTime(45, t0 + 0.13);
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(720, tVoice);
+  osc.frequency.exponentialRampToValueAtTime(1420, tVoice + 0.11);
+  osc.frequency.exponentialRampToValueAtTime(360, tVoice + screamDur);
+
+  const lfo = ctx.createOscillator();
+  lfo.frequency.setValueAtTime(22, tVoice);
+  const lfoG = ctx.createGain();
+  lfoG.gain.setValueAtTime(65, tVoice);
+  lfo.connect(lfoG).connect(osc.frequency);
+
+  const filt = ctx.createBiquadFilter();
+  filt.type = 'bandpass';
+  filt.frequency.setValueAtTime(1600, tVoice);
+  filt.Q.value = 3.0;
+
   const g = ctx.createGain();
-  ampEnv(g, t0, 0.6, 0.004, 0.19);
-  osc.connect(g).connect(sfxBus);
-  osc.start(t0); osc.stop(t0 + 0.2);
+  ampEnv(g, tVoice, 0.48, 0.02, screamDur);
 
-  noiseLayer(ctx, t0, 0.11, { type: 'lowpass', freq: 1100, q: 0.7, peak: 0.26 });
+  osc.connect(filt).connect(g).connect(sfxBus);
+  osc.start(tVoice); osc.stop(tVoice + screamDur + 0.02);
+  lfo.start(tVoice); lfo.stop(tVoice + screamDur + 0.02);
+  noiseLayer(ctx, tVoice, 0.22, { type: 'bandpass', freq: 2800, q: 2, peak: 0.06 });
+}
 
-  const t2 = t0 + 0.1;
-  const o2 = ctx.createOscillator();
-  o2.type = 'sawtooth';
-  o2.frequency.setValueAtTime(420, t2);
-  o2.frequency.exponentialRampToValueAtTime(660, t2 + 0.08);
-  o2.frequency.exponentialRampToValueAtTime(210, t2 + 0.34);
-  const f2 = ctx.createBiquadFilter();
-  f2.type = 'bandpass'; f2.frequency.value = 780; f2.Q.value = 2.2;
-  const g3 = ctx.createGain();
-  ampEnv(g3, t2, 0.22, 0.02, 0.4);
-  o2.connect(f2).connect(g3).connect(sfxBus);
-  o2.start(t2); o2.stop(t2 + 0.42);
+/* ---------- 汤姆猫变声学舌系统（经典 Outfit7 变调算法） ---------- */
+function trimSilence(ctx, buf, threshold = 0.015) {
+  const data = buf.getChannelData(0);
+  let start = 0;
+  let end = data.length - 1;
+  while (start < end && Math.abs(data[start]) < threshold) start++;
+  while (end > start && Math.abs(data[end]) < threshold) end--;
+
+  const pad = Math.floor(ctx.sampleRate * 0.05);
+  start = Math.max(0, start - pad);
+  end = Math.min(data.length, end + pad);
+
+  const len = end - start;
+  if (len <= pad * 2) return null;
+
+  const newBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+  newBuf.copyToChannel(data.subarray(start, end), 0);
+  return newBuf;
+}
+
+let activePlaybackNode = null;
+function playTomMimic(audioBuf, onEnd) {
+  const ctx = audioCtx();
+  const trimmed = trimSilence(ctx, audioBuf);
+  if (!trimmed || trimmed.duration < 0.25) {
+    showBubble('喵？好像没听清，离麦克风近一点再对我说一句吧！', 2500);
+    if (onEnd) onEnd();
+    return;
+  }
+
+  if (activePlaybackNode) {
+    try { activePlaybackNode.stop(); } catch(e){}
+    activePlaybackNode = null;
+  }
+
+  const src = ctx.createBufferSource();
+  src.buffer = trimmed;
+  // 经典汤姆猫变调：1.54x 升调与语速加速（花栗鼠效果）
+  src.playbackRate.value = 1.54;
+
+  // 滤波器：高通 220Hz 削减沉闷低频，峰值滤波 2700Hz 增强小猫清脆卡通共鸣
+  const hp = ctx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 220;
+
+  const peak = ctx.createBiquadFilter();
+  peak.type = 'peaking';
+  peak.frequency.value = 2700;
+  peak.Q.value = 1.6;
+  peak.gain.value = 4.5;
+
+  const g = ctx.createGain();
+  g.gain.value = 1.35;
+
+  src.connect(hp).connect(peak).connect(g).connect(sfxBus);
+
+  const playDuration = trimmed.duration / 1.54;
+  showBubble('😸 汤姆猫正在学你说话...', Math.round(playDuration * 1000) + 600);
+  triggerTalkAction(playDuration);
+
+  src.onended = () => {
+    isTomSpeaking = false;
+    showBubble('嘻嘻，我学得像不像？按住再试试～', 2200);
+    playRandomIdle();
+    activePlaybackNode = null;
+    if (onEnd) onEnd();
+  };
+
+  activePlaybackNode = src;
+  src.start();
+}
+
+function setupMicButton(panel) {
+  const btn = document.createElement('button');
+  btn.id = 'btn-mic';
+  btn.className = 'btn-mic';
+  btn.title = '按住说话或点击开启倾听';
+  btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">对汤姆猫说话 (学舌)</span>';
+  panel.appendChild(btn);
+
+  let isRecording = false;
+  let recordStartTime = 0;
+  let micStream = null;
+  let scriptNode = null;
+  let sourceNode = null;
+  let audioChunks = [];
+  let silenceStart = 0;
+  let maxTimer = null;
+  let dummyGain = null;
+
+  async function startRecording() {
+    if (isRecording || isTomSpeaking) return;
+    const ctx = audioCtx();
+
+    try {
+      if (!micStream || !micStream.active) {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+      }
+    } catch (err) {
+      console.warn('Microphone permission error:', err);
+      showBubble('🎤 麦克风无法访问，汤姆猫为你表演原声台词喵～', 2600);
+      doTalk();
+      return;
+    }
+
+    audioChunks = [];
+    isRecording = true;
+    recordStartTime = performance.now();
+    silenceStart = 0;
+
+    sourceNode = ctx.createMediaStreamSource(micStream);
+    scriptNode = ctx.createScriptProcessor(2048, 1, 1);
+
+    scriptNode.onaudioprocess = (e) => {
+      if (!isRecording) return;
+      const input = e.inputBuffer.getChannelData(0);
+      audioChunks.push(new Float32Array(input));
+
+      // 清空输出缓冲，彻底防止啸叫和回声
+      const output = e.outputBuffer.getChannelData(0);
+      output.fill(0);
+
+      // RMS 计算检测静音
+      let sum = 0;
+      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+      const rms = Math.sqrt(sum / input.length);
+
+      const now = performance.now();
+      if (now - recordStartTime > 1200) {
+        if (rms < 0.015) {
+          if (!silenceStart) silenceStart = now;
+          else if (now - silenceStart > 1100) {
+            stopRecordingAndRepeat();
+          }
+        } else {
+          silenceStart = 0;
+        }
+      }
+    };
+
+    dummyGain = ctx.createGain();
+    dummyGain.gain.value = 0;
+    sourceNode.connect(scriptNode);
+    scriptNode.connect(dummyGain);
+    dummyGain.connect(ctx.destination);
+
+    btn.classList.add('recording');
+    btn.innerHTML = '<span class="mic-icon">🔴</span><span class="mic-txt">倾听中... 请说话</span>';
+    showBubble('👂 倾听中... 对我说话吧！', 8000);
+    playRandomIdle();
+
+    clearTimeout(maxTimer);
+    maxTimer = setTimeout(() => {
+      if (isRecording) stopRecordingAndRepeat();
+    }, 8500);
+  }
+
+  function stopRecordingAndRepeat() {
+    if (!isRecording) return;
+    isRecording = false;
+    clearTimeout(maxTimer);
+
+    btn.classList.remove('recording');
+    btn.classList.add('mimicking');
+    btn.innerHTML = '<span class="mic-icon">😸</span><span class="mic-txt">汤姆猫复述中...</span>';
+
+    if (scriptNode) {
+      try { scriptNode.disconnect(); } catch(e){}
+      scriptNode = null;
+    }
+    if (sourceNode) {
+      try { sourceNode.disconnect(); } catch(e){}
+      sourceNode = null;
+    }
+    if (dummyGain) {
+      try { dummyGain.disconnect(); } catch(e){}
+      dummyGain = null;
+    }
+
+    const duration = performance.now() - recordStartTime;
+    if (duration < 350 || audioChunks.length === 0) {
+      btn.classList.remove('mimicking');
+      btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">对汤姆猫说话 (学舌)</span>';
+      showBubble('喵？录音太短啦，按住多对我说两句吧！', 2200);
+      return;
+    }
+
+    const ctx = audioCtx();
+    let totalLen = 0;
+    for (const chunk of audioChunks) totalLen += chunk.length;
+    const merged = new Float32Array(totalLen);
+    let offset = 0;
+    for (const chunk of audioChunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const audioBuf = ctx.createBuffer(1, totalLen, ctx.sampleRate);
+    audioBuf.copyToChannel(merged, 0);
+
+    playTomMimic(audioBuf, () => {
+      btn.classList.remove('mimicking');
+      btn.innerHTML = '<span class="mic-icon">🎙️</span><span class="mic-txt">对汤姆猫说话 (学舌)</span>';
+    });
+  }
+
+  let pointerDownTime = 0;
+  let isPointerDown = false;
+
+  btn.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    pointerDownTime = performance.now();
+    isPointerDown = true;
+    if (!isRecording) {
+      startRecording();
+    }
+  });
+
+  window.addEventListener('pointerup', () => {
+    if (!isPointerDown) return;
+    isPointerDown = false;
+    const elapsed = performance.now() - pointerDownTime;
+    if (elapsed > 400 && isRecording) {
+      stopRecordingAndRepeat();
+    }
+  });
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const elapsed = performance.now() - pointerDownTime;
+    if (elapsed <= 400 && isRecording) {
+      stopRecordingAndRepeat();
+    }
+  });
 }
 
 /* ---------- 视觉互动效果 ---------- */
@@ -749,7 +1069,7 @@ function spawnHitFx(x, y) {
   }
   const app = document.getElementById('app');
   app.classList.remove('shake');
-  void app.offsetWidth; // 重新触发动画
+  void app.offsetWidth;
   app.classList.add('shake');
 }
 
@@ -760,9 +1080,32 @@ function playRandomIdle() {
   playAnimation(pool[Math.floor(Math.random() * pool.length)]);
 }
 
+function triggerTalkAction(duration = 2.0) {
+  isTomSpeaking = true;
+  const talkAnimIdx = findAnimByPattern(/Action2|Action3|Action1/i);
+  if (talkAnimIdx !== null) {
+    playAnimation(talkAnimIdx);
+  }
+  clearTimeout(talkTimer);
+  talkTimer = setTimeout(() => {
+    isTomSpeaking = false;
+    playRandomIdle();
+  }, Math.max(900, duration * 1000));
+}
+
 /* ---------- 互动动作 ---------- */
-const TALK_TEXTS = ['喵～', '我饿了！', '给点小鱼干？', '哈哈，真好玩！', '别戳我！', '汤姆猫在此！', '今天心情不错～', '喵呜～', '摸摸我吧！'];
-const HIT_TEXTS = ['哎哟！好痛！', '喵嗷！！', '你干嘛！', '疼疼疼！', '再打我要挠你了！'];
+const TOM_TALK_QUOTES = [
+  '我是会说话的汤姆猫！很高兴认识你！',
+  '快按麦克风跟我说话呀，我学你说话！',
+  '喵呜～今天的小鱼干真香！',
+  '别老戳我肚子，我很怕痒的，喵哈哈！',
+  '喵呜～今天天气真好，摸摸我吧！',
+  '快喂我喝牛奶，我肚子都饿扁啦～',
+  '喵哈哈，真好玩！一起来玩吧！',
+  '喵嗷～你是在跟我说话吗？',
+  '嘻嘻，挠我下巴最舒服啦！'
+];
+const HIT_TEXTS = ['哎哟！好痛好痛！', '嗷呜！！', '别打我啦喵！', '疼疼疼！', '再打我要挠你了！', '救命啊喵～！'];
 
 function findAnimByPattern(re) {
   const i = animations.findIndex(a => re.test(a.name));
@@ -770,9 +1113,47 @@ function findAnimByPattern(re) {
 }
 
 function doTalk() {
-  sfxTalk();
-  showBubble(TALK_TEXTS[Math.floor(Math.random() * TALK_TEXTS.length)]);
-  playRandomIdle();
+  const quote = TOM_TALK_QUOTES[Math.floor(Math.random() * TOM_TALK_QUOTES.length)];
+  showBubble(quote, 2800);
+  triggerTalkAction(2.2);
+
+  // 1. 尝试使用高调卡通 TTS 语音（花栗鼠/汤姆猫声线）
+  let spokenWithTTS = false;
+  if ('speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(quote);
+      utter.pitch = 1.88; // 汤姆猫高音调
+      utter.rate = 1.34;  // 略微加速
+      utter.volume = soundOn ? 1 : 0;
+
+      const voices = window.speechSynthesis.getVoices();
+      const zhVoice = voices.find(v => v.lang && (v.lang.includes('zh') || v.lang.includes('cmn'))) || voices[0];
+      if (zhVoice) utter.voice = zhVoice;
+
+      utter.onstart = () => {
+        isTomSpeaking = true;
+        sfxTomMeow(0);
+      };
+      utter.onend = () => {
+        isTomSpeaking = false;
+        playRandomIdle();
+      };
+      utter.onerror = () => {
+        isTomSpeaking = false;
+        sfxTomMeow(1);
+      };
+      window.speechSynthesis.speak(utter);
+      spokenWithTTS = true;
+    } catch (e) {
+      spokenWithTTS = false;
+    }
+  }
+
+  // 2. 如果不支持或未触发 TTS，使用 Web Audio 萌猫声调
+  if (!spokenWithTTS) {
+    sfxTomMeow(Math.random() < 0.5 ? 0 : 1);
+  }
 }
 
 function doMilk() {
@@ -791,12 +1172,14 @@ function doPrank() {
   const r = Math.random();
   if (r < 0.34) { sfxBoing(); showBubble('Boing～弹起来！'); }
   else if (r < 0.67) { doFart(); }
-  else { sfxTalk(2); showBubble('啦啦啦～🎵 喵喵喵 喵！', 2400); }
-  // 随机切换一个动作配合恶搞
+  else {
+    sfxTomMeow(1);
+    showBubble('啦啦啦～🎵 喵喵喵 喵！', 2400);
+  }
   if (animations.length) playAnimation(Math.floor(Math.random() * animations.length));
 }
 
-/* ---------- 点击猫咪：被打效果（按下与松开位置差 < 5px 才算点击，避免拖拽旋转误触发） ---------- */
+/* ---------- 点击猫咪：被打效果 ---------- */
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 let clickCooldown = 0;
@@ -806,7 +1189,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   if (!downPos) return;
   const moved = Math.abs(e.clientX - downPos.x) + Math.abs(e.clientY - downPos.y);
   downPos = null;
-  if (moved > 5) return; // 是拖拽旋转，不是点击
+  if (moved > 5) return;
   pointer.x = (e.clientX / innerWidth) * 2 - 1;
   pointer.y = -(e.clientY / innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
@@ -826,6 +1209,10 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
   if (mixer) mixer.update(dt);
+  if (isTomSpeaking && jawBone) {
+    const t = clock.getElapsedTime() * 16;
+    jawBone.rotation.x += Math.max(0, Math.sin(t)) * 0.12;
+  }
   ring.rotation.z += dt * 0.3;
   controls.update();
   renderer.render(scene, camera);
